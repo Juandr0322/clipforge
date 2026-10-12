@@ -12,7 +12,6 @@ Design notes for later scaling (deliberately NOT built yet):
 """
 from __future__ import annotations
 
-import re
 import shutil
 import threading
 import traceback
@@ -24,7 +23,9 @@ from fastapi import Path as PathParam
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-from clipforge.common.manifest import Manifest, Stage, new_job_id
+from clipforge.common.manifest import (
+    Manifest, Stage, is_safe_job_id, new_job_id,
+)
 from clipforge.highlight.schema import CandidateSet
 from clipforge.ingest.ingest import SUPPORTED_EXTENSIONS, IngestError, ingest
 from clipforge.pipeline import PipelineConfig, run_pipeline
@@ -36,20 +37,19 @@ from clipforge.review.store import (
 
 STATIC = Path(__file__).parent / "static"
 
-# Job ids become directory names, so only plain names are allowed: no dots at
-# the start (blocks '.', '..', '.uploads', '.hidden'), no slashes, no spaces.
-# Ids made by new_job_id() (e.g. 20261012-101500-ab12cd) match.
-_JOB_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
-
-
-def is_safe_job_id(job_id: str) -> bool:
-    return bool(job_id) and _JOB_ID_RE.fullmatch(job_id) is not None
+MAX_STEM_CHARS = 100
 
 
 def _clean_filename(raw: str | None) -> str:
-    """Last path component of an uploaded filename ('' if there is none)."""
+    """Last path component of an uploaded filename ('' if there is none).
+
+    The stem is truncated so a very long name can't exceed filesystem limits;
+    the extension is kept."""
     name = Path((raw or "").replace("\\", "/")).name
-    return "" if name in (".", "..") else name
+    if name in (".", ".."):
+        return ""
+    p = Path(name)
+    return p.stem[:MAX_STEM_CHARS] + p.suffix[:16]
 
 
 class ReviewIn(BaseModel):
@@ -123,8 +123,11 @@ def create_app(workspace: Path, config: PipelineConfig | None = None,
         jid = new_job_id()
         try:
             tmp = stage_dir / name
-            with tmp.open("wb") as f:
-                shutil.copyfileobj(file.file, f)
+            try:
+                with tmp.open("wb") as f:
+                    shutil.copyfileobj(file.file, f)
+            except OSError:
+                raise HTTPException(400, "Could not store the uploaded file")
             if tmp.stat().st_size == 0:
                 raise HTTPException(400, "Uploaded file is empty")
             try:
@@ -132,6 +135,10 @@ def create_app(workspace: Path, config: PipelineConfig | None = None,
             except IngestError as e:
                 shutil.rmtree(workspace / jid, ignore_errors=True)
                 raise HTTPException(400, str(e))
+            except Exception:  # noqa: BLE001 — don't leak internals
+                shutil.rmtree(workspace / jid, ignore_errors=True)
+                traceback.print_exc()
+                raise HTTPException(500, "Could not process the upload")
         finally:
             shutil.rmtree(stage_dir, ignore_errors=True)
         start_run(m.job_id)

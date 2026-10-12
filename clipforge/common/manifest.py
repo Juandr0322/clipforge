@@ -7,6 +7,7 @@ share in-memory state — this file IS the interface between them.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -140,3 +141,13 @@ def new_job_id() -> str:
     """Short, sortable, filesystem-safe job id."""
     return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-") + \
         __import__("uuid").uuid4().hex[:6]
+
+
+# Job ids become directory names, so only plain names are allowed: no dot at
+# the start (blocks '.', '..', '.uploads', '.hidden'), no slashes, no spaces.
+# Ids made by new_job_id() (e.g. 20261012-101500-ab12cd) match.
+_JOB_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+
+
+def is_safe_job_id(job_id: str) -> bool:
+    return bool(job_id) and _JOB_ID_RE.fullmatch(job_id) is not None

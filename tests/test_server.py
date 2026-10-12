@@ -233,8 +233,7 @@ def _uploads_empty(ws):
 
 
 def test_job_id_check():
-    from clipforge.common.manifest import new_job_id
-    from clipforge.server.app import is_safe_job_id
+    from clipforge.common.manifest import is_safe_job_id, new_job_id
     for bad in ["..", ".", ".uploads", ".hidden", "a/b", "a\\b", "", "a b",
                 "../x"]:
         assert not is_safe_job_id(bad), bad
@@ -411,3 +410,93 @@ def test_bad_clip_ids_are_404_or_422(ingested_job, cid):
     r = client.post(f"/api/jobs/{jid}/clips/{cid}/review",
                     json={"decision": "approved"})
     assert r.status_code in (404, 422)
+
+
+def test_manifest_in_workspace_parent_unreachable_via_dotdot(tmp_path):
+    """Regression for the original hole: /api/jobs/%2e%2e resolved to the
+    workspace's PARENT, so a manifest.json there was served as a job."""
+    from clipforge.common.manifest import Manifest
+    ws = tmp_path / "ws"
+    c = TestClient(create_app(ws, config=MOCK_CFG, sync_pipeline=True),
+                   raise_server_exceptions=False)
+    Manifest(job_id="parent").save(tmp_path)          # tmp_path/manifest.json
+    assert (tmp_path / "manifest.json").exists()
+    (tmp_path / "renders").mkdir()
+    (tmp_path / "renders" / "clip_000.mp4").write_bytes(b"x" * 100)
+    (tmp_path / "renders" / "clip_000_qa.png").write_bytes(b"x" * 100)
+
+    jid = "%2e%2e"
+    assert c.get(f"/api/jobs/{jid}").status_code == 404
+    assert c.post(f"/api/jobs/{jid}/rerun").status_code == 404
+    assert c.get(f"/api/jobs/{jid}/clips/0/video").status_code == 404
+    assert c.get(f"/api/jobs/{jid}/clips/0/qa").status_code == 404
+    assert c.post(f"/api/jobs/{jid}/clips/0/review",
+                  json={"decision": "approved"}).status_code == 404
+    assert c.post(f"/api/jobs/{jid}/export-examples").status_code == 404
+    assert not (tmp_path / "reviews.json").exists()
+
+
+def test_very_long_filename_is_not_a_500(fresh, source_video, monkeypatch):
+    from clipforge.server import app as appmod
+    monkeypatch.setattr(appmod, "run_pipeline", lambda d, cfg, progress=None: None)
+    ws, c = fresh
+    long_name = "a" * 300 + ".mp4"
+    with source_video.open("rb") as f:
+        r = c.post("/api/jobs", files={"file": (long_name, f, "video/mp4")})
+    assert r.status_code in (200, 400), r.text
+    if r.status_code == 200:
+        fn = c.get(f"/api/jobs/{r.json()['job_id']}").json()["source"][
+            "original_filename"]
+        assert fn.endswith(".mp4") and len(fn) < 200
+    assert str(ws) not in r.text
+    # a long name with no usable extension is a clean 400
+    r = c.post("/api/jobs", files={"file": ("b" * 300, b"abc", "video/mp4")})
+    assert r.status_code == 400 and str(ws) not in r.text
+    assert _uploads_empty(ws)
+
+
+def test_unexpected_ingest_error_cleans_up(fresh, monkeypatch):
+    from clipforge.server import app as appmod
+
+    def boom(src, workspace, job_id=None, force=False):
+        (workspace / job_id).mkdir(parents=True)        # half-made job dir
+        (workspace / job_id / "source.mp4").write_bytes(b"x")
+        raise ValueError(f"bad thing at {src}")
+
+    monkeypatch.setattr(appmod, "ingest", boom)
+    ws, c = fresh
+    r = c.post("/api/jobs", files={"file": ("a.mp4", b"abc", "video/mp4")})
+    assert r.status_code in (400, 500)
+    assert "bad thing" not in r.text and str(ws) not in r.text
+    assert _job_dirs(ws) == []
+    assert _uploads_empty(ws)
+
+
+def test_workspace_metrics_skips_unsafe_dirs(tmp_path):
+    from clipforge.common.manifest import Manifest
+    from clipforge.review.store import workspace_metrics
+    for name in ("good", ".hidden", "has space"):
+        d = tmp_path / name
+        Manifest(job_id=name).save(d)
+        rs = ReviewSet()
+        rs.upsert(Review(clip_id=0, decision="approved"))
+        save_reviews(d, rs)
+    m = workspace_metrics(tmp_path)
+    assert list(m["per_job"]) == ["good"]
+    assert m["jobs_with_reviews"] == 1 and m["total_reviewed"] == 1
+
+
+@pytest.mark.parametrize("bad", ["..", ".hidden", "a/b", "a b", ""])
+def test_cli_ingest_rejects_unsafe_job_id(tmp_path, monkeypatch, capsys, bad):
+    import sys
+    from clipforge import cli
+    monkeypatch.setattr(cli, "load_env", lambda *a, **k: None)
+    called = []
+    monkeypatch.setattr(cli, "ingest", lambda *a, **k: called.append(1))
+    monkeypatch.setattr(sys, "argv", ["clipforge", "ingest", "v.mp4",
+                                      "--workspace", str(tmp_path / "ws"),
+                                      "--job-id", bad])
+    assert cli.main() != 0
+    assert not called
+    assert "job-id" in capsys.readouterr().err
+    assert not (tmp_path / "ws").exists()
