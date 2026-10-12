@@ -12,6 +12,7 @@ completed stages no-op, the failed/remaining ones execute.
 """
 from __future__ import annotations
 
+import importlib.util
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -42,9 +43,7 @@ class PipelineConfig:
             print("[pipeline] no ANTHROPIC_API_KEY -> highlight engine: mock")
             cfg.highlight_engine = "mock"
         if cfg.detector == "mediapipe":
-            try:
-                import mediapipe  # noqa: F401
-            except ImportError:
+            if importlib.util.find_spec("mediapipe") is None:
                 print("[pipeline] mediapipe not installed -> detector: haar")
                 cfg.detector = "haar"
         return cfg

@@ -11,8 +11,7 @@ seconds-vs-anything-else bug class impossible to reintroduce).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass
 
 from pydantic import BaseModel
 

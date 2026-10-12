@@ -11,7 +11,6 @@ from pathlib import Path
 
 from clipforge.common.manifest import Manifest, Stage
 from clipforge.highlight.backends import Highlighter
-from clipforge.highlight.schema import CandidateSet
 from clipforge.transcribe.schema import Transcript
 
 

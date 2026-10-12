@@ -7,7 +7,7 @@ All timestamps are float seconds, same rule as everywhere.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
