@@ -1,0 +1,18 @@
+{
+  "project": "ClipForge",
+  "features": [
+    {
+      "id": "F01",
+      "title": "EXAMPLE (the planner replaces this): user can sign up",
+      "priority": 1,
+      "area": ["src/auth/**", "tests/auth/**"],
+      "depends_on": [],
+      "acceptance": [
+        "Signing up with a new email lands the user on the dashboard",
+        "Signing up with an email that already exists shows an error and creates nothing"
+      ],
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}

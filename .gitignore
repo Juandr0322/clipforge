@@ -34,3 +34,6 @@ input/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Agent team logs
+.agent-logs/

@@ -1,19 +1,37 @@
-# Working on ClipForge
+# Project: ClipForge
+AI pipeline that turns long streams/podcasts into captioned vertical clips, plus a local review website (FastAPI + one static page) where Diego approves clips. Used to sell clipping retainers to small creators; also a resume project, so code quality and git history matter.
 
-## Layout
-- `clipforge/` — the 7 pipeline modules (ingest, transcribe, highlight, refine, reframe, render, review/server).
-- `tests/` — pytest suite; runs fully offline with mock engines.
-- `examples/` — few-shot example library for the highlight step.
-- Modules talk only through JSON files in the job dir; `manifest.json` is the state machine. Keep it that way.
+## Commands
+<!-- Agents copy these exactly. -->
+- Install: `pip install -r requirements.txt` (needs ffmpeg on PATH; OpenCV must stay < 5)
+- Dev server (review website): `CLIPFORGE_ASR=mock CLIPFORGE_HL=mock CLIPFORGE_DETECTOR=haar python -m clipforge.cli serve` → http://localhost:8000
+- Tests: `python -m pytest tests/ -q` (offline, mock engines, ~3 min)
+- Quick tests for one area: `python -m pytest tests/test_server.py -q`
+- Lint: `python -m pyflakes clipforge tests`
 
-## Rules for every change
-1. One upgrade step per branch (`step-N-short-name`), opened as a pull request against `main`.
-2. Run `python -m pytest tests/ -q` before and after. All tests must pass; new behavior gets new tests.
-3. Before the PR, the `reviewer` agent checks the diff (see `.claude/agents/reviewer.md`).
-4. The PR description explains in plain words what changed, what it does, and anything Diego must set up or test on real footage.
-5. Never commit secrets (`.env`, `client_secret*.json`, tokens) or video files. `.gitignore` covers them; double-check with `git status`.
-6. Nothing posts to social platforms automatically until Phase 4 of the upgrade plan.
+## Architecture (don't break these)
+- `clipforge/<stage>/` = the 7 pipeline modules. Stages talk ONLY through JSON files in the job dir; `manifest.json` is the state machine.
+- Every stage is idempotent (re-running a finished stage is a no-op) and verifies its own outputs.
+- Engines (ASR / LLM / face detector) are swappable with mock implementations. Tests must never call the real Claude API or download models.
+- Website: `clipforge/server/app.py` (API) + `clipforge/server/static/index.html` (UI, vanilla JS, no build step).
 
-## Pins and quirks
-- OpenCV must stay below 5: 5.x removed `CascadeClassifier`, which the haar face-detector fallback uses.
-- `tests/test_render.py::test_tracked_crop_actually_moves` has failed once under load and passed on rerun; treat a single failure there as possibly flaky, but investigate if it repeats.
+## Rules for every agent
+- Source of truth: `docs/SPEC.md` (what to build), `docs/features.json` (status), `docs/progress.md` (log). Read the top of progress.md before starting.
+- One feature at a time. Stay inside the files your task names.
+- A feature is done when its acceptance criteria pass — not when the code "looks right."
+- Never edit a test just to make it pass. If a test is wrong, say so and explain why.
+- Never read or print secrets (`.env`, `client_secret*.json`, keys, tokens). Never commit video files. Never push, deploy, or publish.
+- Only use footage we have rights to; nothing posts to social platforms automatically.
+- Keep command output short: pipe long output through `tail -40` or `grep`.
+- Search for an existing helper before writing a new one.
+- Commit small, with descriptive messages.
+
+## Known quirks
+- `tests/test_render.py::test_tracked_crop_actually_moves` has failed once under load and passed on rerun; investigate if it repeats.
+
+## Lessons learned (curated by /retro — max 40 lines)
+@docs/LESSONS.md
+
+# Compact instructions
+When compacting, keep: current feature id, files changed, failing tests, open review findings, next step.
+Drop: full file contents, old command output, exploration that led nowhere.
