@@ -56,12 +56,19 @@ def test_pipeline_config_fallbacks(monkeypatch):
     assert cfg.detector in ("haar", "mediapipe")  # haar if mp not installed
 
 
-def test_pipeline_falls_back_to_haar_without_mediapipe(monkeypatch):
-    import importlib.util
-    real = importlib.util.find_spec
-    monkeypatch.setattr(
-        importlib.util, "find_spec",
-        lambda name, *a, **k: None if name == "mediapipe" else real(name, *a, **k))
+@pytest.mark.parametrize("exc", [ImportError("no mediapipe"),
+                                 RuntimeError("protobuf mismatch")])
+def test_pipeline_falls_back_to_haar_without_mediapipe(monkeypatch, exc):
+    """Covers both 'not installed' and 'installed but import raises'."""
+    import importlib
+    real = importlib.import_module
+
+    def fake(name, *a, **k):
+        if name == "mediapipe":
+            raise exc
+        return real(name, *a, **k)
+
+    monkeypatch.setattr(importlib, "import_module", fake)
     cfg = PipelineConfig(detector="mediapipe").resolve()
     assert cfg.detector == "haar"
 
