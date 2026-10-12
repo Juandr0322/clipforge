@@ -145,7 +145,7 @@ def create_app(workspace: Path, config: PipelineConfig | None = None,
 
     @app.get("/", response_class=HTMLResponse)
     def index():
-        return (STATIC / "index.html").read_text()
+        return (STATIC / "index.html").read_text(encoding="utf-8")
 
     # A plain `def` on purpose: FastAPI runs it in a worker thread, so the
     # blocking copy + ffmpeg ingest never stalls the event loop (and with it

@@ -73,7 +73,7 @@ def write_sendcmd(path: Path, crop: CropPath, geom: CropGeometry,
         t = i / fps
         x = crop_x_px(crop.cx_at(t), src_w, geom.crop_w)
         lines.append(f"{t:.4f} crop@dyn x {x};")
-    path.write_text("\n".join(lines) + "\n")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def build_filtergraph(geom: CropGeometry, crop: CropPath, src_w: int,
