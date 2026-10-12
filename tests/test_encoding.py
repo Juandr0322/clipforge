@@ -16,11 +16,13 @@ Linux CI defaults to UTF-8 and hides this, so these tests:
 import ast
 import builtins
 import io
+import json
 import os
+import shutil
 import subprocess
 import sys
 import textwrap
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 from fastapi.testclient import TestClient
@@ -34,6 +36,8 @@ from clipforge.highlight.schema import CandidateSet, ClipCandidate
 from clipforge.pipeline import PipelineConfig
 from clipforge.refine.refine import RefinedClip, RefinedSet
 from clipforge.reframe.detect import CropKeyframe, CropPath
+from clipforge.ingest import ingest as ingest_mod
+from clipforge.render import render as render_mod
 from clipforge.render import run as render_run
 from clipforge.render.run import render_job
 from clipforge.review.store import (
@@ -69,15 +73,31 @@ def _arg(call, pos, name):
     return call.args[pos] if len(call.args) > pos else None
 
 
+SUBPROCESS_FUNCS = {"run", "Popen", "check_output", "check_call", "call"}
+SUBPROCESS_ALWAYS_TEXT = {"getoutput", "getstatusoutput"}
+# tempfile constructors: (mode position, encoding position); default is binary
+TEMPFILE_FUNCS = {"NamedTemporaryFile": (0, 2), "TemporaryFile": (0, 2),
+                  "SpooledTemporaryFile": (1, 3)}
+
+
+def _is_utf8(node) -> bool:
+    return str(_const(node)).lower() in UTF8_NAMES
+
+
+def _kw(call, name):
+    return next((k.value for k in call.keywords if k.arg == name), None)
+
+
 def find_unsafe_text_io(source: str, filename: str = "<src>") -> list[str]:
-    """Return 'file:line: what' for every text-mode read_text / write_text /
-    open / io.open / Path.open call that lacks an explicit UTF-8 encoding."""
+    """Return 'file:line: what' for every text-mode file or pipe use that
+    lacks an explicit UTF-8 encoding: read_text / write_text / open / io.open
+    / Path.open, subprocess.* with text=True / universal_newlines=True (or
+    errors=), and tempfile text-mode files."""
     problems = []
     for node in ast.walk(ast.parse(source, filename)):
         if not isinstance(node, ast.Call):
             continue
         f = node.func
-        # **kwargs could hide anything: treat as not explicit
         if isinstance(f, ast.Attribute):
             kind = f.attr
             recv = f.value.id if isinstance(f.value, ast.Name) else None
@@ -86,6 +106,7 @@ def find_unsafe_text_io(source: str, filename: str = "<src>") -> list[str]:
         else:
             continue
 
+        mode = None
         if kind == "read_text":
             enc = _arg(node, 0, "encoding")
         elif kind == "write_text":
@@ -98,15 +119,39 @@ def find_unsafe_text_io(source: str, filename: str = "<src>") -> list[str]:
             continue
         elif kind == "open":                                     # Path.open
             mode, enc = _arg(node, 0, "mode"), _arg(node, 2, "encoding")
+        elif recv == "subprocess" and kind in SUBPROCESS_ALWAYS_TEXT:
+            problems.append(f"{filename}:{node.lineno}: subprocess.{kind}() "
+                            "decodes with the locale; use run(encoding=...)")
+            continue
+        elif recv == "subprocess" and kind in SUBPROCESS_FUNCS:
+            enc = _kw(node, "encoding")
+            flags = [_kw(node, "text"), _kw(node, "universal_newlines")]
+            text_mode = enc is not None or _kw(node, "errors") is not None \
+                or any(v is not None and _const(v) is not False for v in flags)
+            if not text_mode:
+                continue                                  # bytes in, bytes out
+            if enc is None or not _is_utf8(enc):
+                problems.append(f"{filename}:{node.lineno}: subprocess."
+                                f"{kind}() in text mode without "
+                                "encoding='utf-8'")
+            continue
+        elif kind in TEMPFILE_FUNCS and recv in (None, "tempfile"):
+            mpos, epos = TEMPFILE_FUNCS[kind]
+            mode, enc = _arg(node, mpos, "mode"), _arg(node, epos, "encoding")
+            m = _const(mode) if mode is not None else "w+b"   # default: binary
+            if not (isinstance(m, str) and "b" in m) and (
+                    enc is None or not _is_utf8(enc)):
+                problems.append(f"{filename}:{node.lineno}: tempfile.{kind}()"
+                                " in text mode without encoding='utf-8'")
+            continue
         else:
             continue
 
-        if kind == "open":
-            if mode is not None:
-                m = _const(mode)
-                if isinstance(m, str) and "b" in m:
-                    continue                          # binary: no encoding
-        if _const(enc) is None or str(_const(enc)).lower() not in UTF8_NAMES:
+        if kind == "open" and mode is not None:
+            m = _const(mode)
+            if isinstance(m, str) and "b" in m:
+                continue                                  # binary: no encoding
+        if enc is None or not _is_utf8(enc):
             problems.append(f"{filename}:{node.lineno}: {kind}() without "
                             f"explicit encoding='utf-8'")
     return problems
@@ -119,6 +164,13 @@ def test_guard_catches_what_it_should():
         "p.read_text(encoding=enc)", "p.read_text(**kw)",
         "p.write_text(s, encoding='cp1252')", "open(p, 'rt')",
         "p.read_text(errors='ignore')",
+        "subprocess.run(c, text=True)", "subprocess.run(c, universal_newlines=True)",
+        "subprocess.run(c, capture_output=True, text=True, errors='replace')",
+        "subprocess.check_output(c, text=flag)", "subprocess.Popen(c, text=True)",
+        "subprocess.run(c, encoding='cp1252')", "subprocess.getoutput(c)",
+        "tempfile.NamedTemporaryFile('w')", "tempfile.TemporaryFile(mode='w+')",
+        "NamedTemporaryFile(mode='r', suffix='.x')",
+        "tempfile.SpooledTemporaryFile(10, 'w')",
     ]
     good = [
         "p.read_text(encoding='utf-8')", "p.write_text(s, encoding='utf-8')",
@@ -127,6 +179,16 @@ def test_guard_catches_what_it_should():
         "io.open(p, 'wb')", "p.open('rb')", "p.open('wb')", "p.open(mode='ab')",
         "p.open('w', encoding='utf-8')", "wave.open(str(p), 'rb')",
         "os.path.exists(p)", "x.read()",
+        "subprocess.run(c, capture_output=True)", "subprocess.run(c, text=False)",
+        "subprocess.run(c, text=True, encoding='utf-8')",
+        "subprocess.run(c, capture_output=True, text=True, encoding='utf-8',"
+        " errors='replace')",
+        "subprocess.Popen(c, stdout=PIPE)",
+        "tempfile.NamedTemporaryFile()", "tempfile.NamedTemporaryFile('w+b')",
+        "tempfile.TemporaryFile(mode='wb')",
+        "tempfile.NamedTemporaryFile('w', encoding='utf-8')",
+        "tempfile.SpooledTemporaryFile(10, 'w', -1, 'utf-8')",
+        "tempfile.mkdtemp()",
     ]
     for src in bad:
         assert find_unsafe_text_io(src), f"guard missed: {src}"
@@ -326,3 +388,133 @@ def test_ass_subtitles_written_as_utf8(windows_defaults, tmp_path, monkeypatch):
         assert word.encode("utf-8") in raw, word
         assert word in text
     assert "😀".encode("utf-8") in raw
+
+
+# ------------------------------------------- subprocess output decoding
+
+TITLE = "Entrevista “con señor” 日本語”"          # ends in U+201D: bytes E2 80 9D
+PROBE_JSON = json.dumps({"format": {"duration": "1.0", "tags": {"title": TITLE}},
+                         "streams": []}, ensure_ascii=False).encode("utf-8")
+
+
+@pytest.fixture
+def windows_subprocess(monkeypatch):
+    """subprocess.run as it behaves on Windows: the child's output is UTF-8
+    bytes, and text mode without encoding= decodes them as cp1252."""
+    box = {"stdout": b"", "stderr": b"", "rc": 0}
+
+    def fake_run(cmd, *, capture_output=False, text=None, encoding=None,
+                 errors=None, universal_newlines=None, timeout=None, **kw):
+        out, err = box["stdout"], box["stderr"]
+        if text or universal_newlines or encoding or errors:
+            enc = encoding or "cp1252"
+            out, err = (b.decode(enc, errors or "strict") for b in (out, err))
+        return subprocess.CompletedProcess(cmd, box["rc"], out, err)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return box
+
+
+def test_probe_survives_utf8_metadata_under_cp1252(windows_subprocess):
+    assert b"\x9d" in PROBE_JSON
+    windows_subprocess["stdout"] = PROBE_JSON
+    info = ingest_mod.probe(Path("whatever.mp4"))
+    assert info["format"]["tags"]["title"] == TITLE
+
+
+def test_failed_commands_report_instead_of_crashing_on_decode(
+        windows_subprocess):
+    windows_subprocess.update(stderr="bad tag ” 日本語".encode("utf-8"), rc=1)
+    with pytest.raises(ingest_mod.IngestError, match="bad tag"):
+        ingest_mod._run(["ffprobe"])
+    with pytest.raises(render_mod.RenderError, match="bad tag"):
+        render_mod._run(["ffmpeg"])
+
+
+def test_measure_loudness_ignores_undecodable_stderr(windows_subprocess):
+    windows_subprocess["stderr"] = (
+        "title: ” 日本語\n".encode("utf-8") + b'{"input_i": "-20.5"}')
+    assert render_mod.measure_loudness(Path("x.mp4")) == -20.5
+
+
+needs_ffmpeg = pytest.mark.skipif(
+    not (shutil.which("ffmpeg") and shutil.which("ffprobe")),
+    reason="ffmpeg/ffprobe not installed")
+
+PROBE_CHILD = textwrap.dedent("""
+    import locale, sys
+    if locale.getpreferredencoding(False).lower().replace("-", "") in (
+            "utf8", "utf_8"):
+        sys.exit(3)
+    from pathlib import Path
+    from clipforge.ingest.ingest import probe
+    title = probe(Path(sys.argv[1]))["format"]["tags"]["title"]
+    sys.stdout.buffer.write(title.encode("utf-8"))
+""")
+
+
+@needs_ffmpeg
+def test_real_ffprobe_utf8_title_in_non_utf8_locale(tmp_path):
+    """No fakes: a real file whose title tag holds UTF-8, probed by a child
+    that has a non-UTF-8 default encoding."""
+    clip = tmp_path / "titled.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=duration=1:size=64x64",
+         "-metadata", f"title={TITLE}", "-pix_fmt", "yuv420p", str(clip)],
+        check=True, capture_output=True)
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("PYTHONUTF8", "PYTHONIOENCODING", "LC_ALL", "LANG",
+                        "LC_CTYPE", "PYTHONCOERCECLOCALE")}
+    env.update(PYTHONUTF8="0", PYTHONCOERCECLOCALE="0", LC_ALL="C",
+               PYTHONPATH=str(ROOT))
+    r = subprocess.run([sys.executable, "-c", PROBE_CHILD, str(clip)],
+                       cwd=ROOT, env=env, capture_output=True, timeout=120)
+    if r.returncode == 3:
+        pytest.skip("cannot force a non-UTF-8 default encoding here")
+    assert r.returncode == 0, r.stderr.decode("utf-8", "replace")[-1500:]
+    assert r.stdout.decode("utf-8") == TITLE
+
+
+# ------------------------------------------------ ffmpeg filter-path quoting
+
+def test_ffmpeg_filter_path_escapes_both_levels():
+    f = render_mod.ffmpeg_filter_path
+    # Windows drive letter: the colon must be escaped, slashes forward
+    assert f(PureWindowsPath(r"C:\Users\diego\ws\job\clip_000.ass")) == \
+        r"'C\:/Users/diego/ws/job/clip_000.ass'"
+    assert f("C:/Users/diego/ws/job/clip_000.ass") == \
+        r"'C\:/Users/diego/ws/job/clip_000.ass'"
+    # apostrophe: escaped for the option level, then the quote is closed,
+    # emitted as \' and reopened for the graph level
+    assert f("/tmp/a:b's/x.ass") == r"""'/tmp/a\:b\'\''s/x.ass'"""
+    # backslashes that survive as_posix (POSIX names) are doubled
+    assert f("/tmp/we\\ird/x.ass") == r"'/tmp/we\\ird/x.ass'"
+    # plain paths just get quoted
+    assert f("/tmp/x/clip_000.ass") == "'/tmp/x/clip_000.ass'"
+
+
+@needs_ffmpeg
+def test_real_render_in_directory_with_colon_and_apostrophe(tmp_path):
+    """ass= and sendcmd= both point into a:b's/ . Fails with the old
+    `ass='{path}'` interpolation (the apostrophe ends the quoting)."""
+    from clipforge.render.captions import CaptionCard, to_ass
+
+    d = tmp_path / "a:b's"
+    d.mkdir()
+    src = tmp_path / "src.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i",
+         "testsrc=duration=3:size=640x360:rate=30",
+         "-f", "lavfi", "-i", "sine=frequency=300:duration=3",
+         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+         "-c:a", "aac", "-shortest", str(src)],
+        check=True, capture_output=True)
+    ass = d / "clip_000.ass"
+    ass.write_text(to_ass([CaptionCard(text="Café señor", start=0.2, end=2.0)]),
+                   encoding="utf-8")
+    crop = CropPath(clip_id=0, mode="tracked", keyframes=[
+        CropKeyframe(t=0.0, cx=0.3), CropKeyframe(t=2.0, cx=0.7)])
+    out = d / "clip_000.mp4"
+    render_mod.render_clip(src, out, 0.0, 2.0, crop, src_w=640, src_h=360,
+                           fps=30.0, ass_path=ass, workdir=d)
+    render_mod.verify_render(out, 2.0)

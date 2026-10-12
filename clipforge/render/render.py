@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import subprocess
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePath
 
 from clipforge.ingest.ingest import parse_probe, probe
 from clipforge.reframe.detect import CropPath
@@ -34,9 +34,26 @@ class RenderError(Exception):
 
 
 def _run(cmd: list[str], timeout: int = 1800) -> None:
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    p = subprocess.run(cmd, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", timeout=timeout)
     if p.returncode != 0:
         raise RenderError(f"ffmpeg failed: {p.stderr.strip()[-800:]}")
+
+
+def ffmpeg_filter_path(path) -> str:
+    """A file path as a filter-option value, quoted for ffmpeg's two parsing
+    levels (filtergraph, then the filter's own ``key=value:key=value``).
+
+    Forward slashes; ``\\``, ``:`` and ``'`` are escaped for the option level
+    (a drive-letter colon like ``C:/Users`` would otherwise split the options,
+    even inside quotes, because the graph parser strips the quotes first);
+    then the whole value is single-quoted for the graph level, where only
+    ``'`` is special (written ``'\\''``).  Returns the quoted token, so use it
+    as ``ass={ffmpeg_filter_path(p)}``.
+    """
+    s = PurePath(path).as_posix()
+    s = s.replace("\\", "\\\\").replace("'", "\\'").replace(":", "\\:")
+    return "'" + s.replace("'", "'\\''") + "'"
 
 
 def _even(n: int) -> int:
@@ -86,14 +103,14 @@ def build_filtergraph(geom: CropGeometry, crop: CropPath, src_w: int,
             parts.append(f"crop=w={geom.crop_w}:h={geom.crop_h}:x={x0}:y=0")
         else:
             x0 = crop_x_px(crop.keyframes[0].cx, src_w, geom.crop_w)
-            parts.append(f"sendcmd=f='{sendcmd_path.as_posix()}'")
+            parts.append(f"sendcmd=f={ffmpeg_filter_path(sendcmd_path)}")
             parts.append(f"crop@dyn=w={geom.crop_w}:h={geom.crop_h}:x={x0}:y=0")
         parts.append(f"scale={OUT_W}:{OUT_H}")
     else:  # letterbox narrow sources
         parts.append(f"scale={OUT_W}:-2")
         parts.append(f"pad={OUT_W}:{OUT_H}:(ow-iw)/2:(oh-ih)/2:color=black")
     if ass_path is not None:
-        parts.append(f"ass='{ass_path.as_posix()}'")
+        parts.append(f"ass={ffmpeg_filter_path(ass_path)}")
     return ",".join(parts)
 
 
@@ -145,7 +162,8 @@ def measure_loudness(path: Path) -> float:
         "ffmpeg", "-i", str(path), "-af",
         "loudnorm=I=-14:TP=-1.5:LRA=11:print_format=json",
         "-f", "null", "-",
-    ], capture_output=True, text=True, timeout=600)
+    ], capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=600)
     tail = p.stderr[p.stderr.rfind("{"):p.stderr.rfind("}") + 1]
     return float(json.loads(tail)["input_i"])
 

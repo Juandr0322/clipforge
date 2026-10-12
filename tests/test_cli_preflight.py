@@ -136,3 +136,26 @@ def test_port_problem_unit(busy_port):
     p = free_port()
     assert cli.port_problem("127.0.0.1", p) is None
     assert cli.port_problem("127.0.0.1", p) is None
+
+
+def test_port_problem_probes_every_resolved_address(monkeypatch, busy_port):
+    """--host localhost can resolve to ::1 and 127.0.0.1: a server on the
+    second must be noticed even when the first is free or unusable."""
+    def fake_getaddrinfo(host, port, **kw):
+        return [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", port, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port)),
+        ]
+    monkeypatch.setattr(cli.socket, "getaddrinfo", fake_getaddrinfo)
+    assert "already in use" in cli.port_problem("localhost", busy_port)
+    monkeypatch.setattr(cli.socket, "getaddrinfo", fake_getaddrinfo)
+    assert cli.port_problem("localhost", free_port()) is None
+
+
+def test_port_problem_localhost_name_is_checked(busy_port):
+    assert "already in use" in cli.port_problem("localhost", busy_port)
+
+
+def test_port_problem_unresolvable_host_is_a_clean_message():
+    msg = cli.port_problem("no-such-host.invalid", 8000)
+    assert msg.startswith("Cannot listen on no-such-host.invalid:8000")

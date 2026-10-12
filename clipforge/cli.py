@@ -39,23 +39,38 @@ def ffmpeg_problem() -> str | None:
 
 def port_problem(host: str, port: int) -> str | None:
     """Try to bind host:port and close again; return a message if we can't."""
-    s = socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET,
-                      socket.SOCK_STREAM)
     try:
-        if sys.platform != "win32":
-            # like uvicorn: a lingering TIME_WAIT must not count as "busy".
-            # Never on Windows, where it would let us steal a live port.
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.bind((host, port))
+        # every address the host name resolves to (localhost -> ::1 and
+        # 127.0.0.1), so a server on either one is noticed
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except OSError as e:
-        if e.errno in ADDR_IN_USE:
-            return (f"Port {port} is already in use — another ClipForge "
-                    "server may still be running. Close it, or start on "
-                    "another port: python -m clipforge.cli serve "
-                    f"--port {port + 1}")
         return f"Cannot listen on {host}:{port}: {e.strerror or e}"
-    finally:
-        s.close()
+    usable, failure = 0, None
+    for family, socktype, proto, _canon, addr in infos:
+        try:
+            s = socket.socket(family, socktype, proto)
+        except OSError as e:
+            failure = failure or e
+            continue
+        try:
+            if sys.platform != "win32":
+                # like uvicorn: a lingering TIME_WAIT must not count as busy.
+                # Never on Windows, where it would let us steal a live port.
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(addr)
+            usable += 1
+        except OSError as e:
+            if e.errno in ADDR_IN_USE:
+                return (f"Port {port} is already in use — another ClipForge "
+                        "server may still be running. Close it, or start on "
+                        "another port: python -m clipforge.cli serve "
+                        f"--port {port + 1}")
+            failure = failure or e
+        finally:
+            s.close()
+    # an unusable secondary address (e.g. no IPv6) is fine; none usable is not
+    if not usable and failure is not None:
+        return f"Cannot listen on {host}:{port}: {failure.strerror or failure}"
     return None
 
 
