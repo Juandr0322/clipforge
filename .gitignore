@@ -37,3 +37,6 @@ Thumbs.db
 
 # Agent team logs
 .agent-logs/
+
+# Per-machine Claude Code settings
+.claude/settings.local.json
