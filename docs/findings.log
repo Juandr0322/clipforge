@@ -22,3 +22,5 @@
 2026-10-12 | F21 | reviewer | MAJOR | subprocess text=True decodes ffprobe/ffmpeg metadata as cp1252 on Windows; AST guard missed subprocess/tempfile
 2026-10-12 | F21 | lead | MAJOR | ffmpeg filter paths C:/... break ass= and sendcmd= on Windows (drive-letter colon)
 2026-10-12 | F21 | ci | MAJOR | ffmpeg 8 removed -vsync → ingest fails on every video with current ffmpeg (Windows CI)
+2026-10-12 | F22 | reviewer | MINOR | CI downloaded unpinned ffmpeg 'latest'; Windows pwsh pipeline could set non-zero exit code
+2026-10-12 | F22 | ci | MINOR | compat tests used a git-ignored fixture video (missing in CI); Windows CRLF checkout broke byte comparisons
