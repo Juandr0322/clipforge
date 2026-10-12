@@ -226,7 +226,10 @@ def test_background_upload_and_idle_polling(env, seeded, page):
 
     # a second upload processes in the background
     _upload(page, "second.mp4", second)
-    page.wait_for_selector("#joblist .job >> nth=1")
+    # The new job has no manifest (so no row) until ffmpeg has finished ingesting
+    # the 90 s video: 27-40 s on a busy 2-CPU runner, before and after F07. The
+    # default 30 s wait made this test depend on machine load.
+    page.wait_for_selector("#joblist .job >> nth=1", timeout=120000)
     assert page.locator("#detail .clip").count() > 0   # still on job 1
     t0 = page.evaluate("window.__video.currentTime")
     page.api_calls.clear()
