@@ -2,6 +2,9 @@
 <!-- Newest entry at the top. The lead adds one entry per feature attempt.
      Every agent reads the top of this file first, so keep entries to 1–2 lines. -->
 
+- 2026-10-12 · F02 · merged · flaky test root cause: ffmpeg gradients x1=1280 out of range → random crossover; fixture now a deterministic geq ramp + frozen-camera negative control. 127 tests pass.
+- 2026-10-12 · F01 · merged · .env loaded from repo root at CLI start, real env wins, library imports never read .env. Next: F03.
+
 <!-- Format:
 - YYYY-MM-DD · F00 · built / review FAIL / test FAIL / merged · what happened, what's next
 -->

@@ -1,1 +1,4 @@
 # date | feature | reviewer/tester | severity | short description
+2026-10-12 | F01 | reviewer | MINOR | CLI test read real ~/clipforge-workspace (no --workspace) and swallowed all exceptions
+2026-10-12 | F01 | reviewer | MINOR | import-isolation and .env.example tests used weak checks (substring match, single stub)
+2026-10-12 | F02 | reviewer | MINOR | root-cause wording imprecise: only x1 was out of range, filter is otherwise deterministic

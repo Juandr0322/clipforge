@@ -26,9 +26,6 @@ AI pipeline that turns long streams/podcasts into captioned vertical clips, plus
 - Search for an existing helper before writing a new one.
 - Commit small, with descriptive messages.
 
-## Known quirks
-- `tests/test_render.py::test_tracked_crop_actually_moves` has failed once under load and passed on rerun; investigate if it repeats.
-
 ## Lessons learned (curated by /retro — max 40 lines)
 @docs/LESSONS.md
 
