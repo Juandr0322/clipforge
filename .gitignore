@@ -1,0 +1,36 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+client_secret*.json
+*credentials*.json
+token*.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# ClipForge runtime output (videos, job state, review DB)
+workspace/
+renders/
+input/
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.wav
+*.m4a
+*.flv
+*.db
+*.sqlite
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

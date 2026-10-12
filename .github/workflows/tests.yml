@@ -1,0 +1,30 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install ffmpeg (with libass for captions)
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests (offline, mock engines)
+        env:
+          CLIPFORGE_ASR: mock
+          CLIPFORGE_HL: mock
+          CLIPFORGE_DETECTOR: haar
+        run: python -m pytest tests/ -q
