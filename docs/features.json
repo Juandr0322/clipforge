@@ -185,7 +185,31 @@
         ".github/workflows/tests.yml gains a windows-latest job that installs ffmpeg and runs at least tests/test_server.py, tests/test_ui_static.py and tests/test_encoding.py (and the full suite if it passes there); the Linux job is unchanged"
       ],
       "passes": false,
-      "notes": "Reported by Diego: localhost doesn't run on his Windows PC. Root cause found by the lead: app.py index() does (STATIC/'index.html').read_text() with no encoding; on Windows Python defaults to cp1252, and index.html contains byte 0x9D (from a right curly quote) which cp1252 can't decode -> 500 on GET /. ~20 other read_text/write_text calls have the same issue (JSON stores, .ass captions, few-shot examples). Workaround until merged: PYTHONUTF8=1."
+      "notes": "Reported by Diego: localhost doesn't run on his Windows PC. Root cause found by the lead: app.py index() does (STATIC/'index.html').read_text() with no encoding; on Windows Python defaults to cp1252, and index.html contains byte 0x9D (from a right curly quote) which cp1252 can't decode -> 500 on GET /. ~20 other read_text/write_text calls have the same issue (JSON stores, .ass captions, few-shot examples). Workaround until merged: PYTHONUTF8=1. Status: code merged; Linux CI green. Windows CI fails only because windows-latest gets ffmpeg 8, which removed -vsync (ingest.py) → tracked as F22. F21 passes once the Windows job is green."
+    },
+    {
+      "id": "F22",
+      "title": "Support current ffmpeg (8.x) as well as Ubuntu's 6.1: replace removed options, test against both in CI",
+      "priority": 0,
+      "area": [
+        "clipforge/ingest/ingest.py",
+        "clipforge/render/**",
+        "clipforge/refine/silence.py",
+        "tests/**",
+        ".github/workflows/tests.yml"
+      ],
+      "depends_on": [
+        "F21"
+      ],
+      "acceptance": [
+        "With a current ffmpeg build first on PATH (lead provides one at the path in notes), the full test suite passes; list every option or output-format change found and how it was fixed",
+        "ingest no longer uses -vsync; it uses -fps_mode cfr (supported since ffmpeg 5.1). The suite still passes with the system ffmpeg 6.1",
+        "Any other ffmpeg/ffprobe output the code parses (loudnorm JSON, silencedetect lines, ffprobe JSON fields, stderr error text) is checked against both versions; parsing works on both (tests)",
+        "The Linux CI job also runs the suite against a current static ffmpeg (e.g. BtbN latest linux64 gpl from GitHub releases) in addition to the distro ffmpeg; the windows-latest job turns green",
+        "The startup preflight prints the detected ffmpeg version, and refuses versions older than 5.1 with a clear message"
+      ],
+      "passes": false,
+      "notes": "Found by the new windows-latest CI job (F21): choco installs ffmpeg 8 (libavutil 61) which rejects '-vsync' (clipforge/ingest/ingest.py:178), so ingest fails on every video. Diego's 'winget install Gyan.FFmpeg' also installs the latest ffmpeg, so this hits him too. Lead downloaded a current build for local testing: /tmp/claude-0/-home-claude-clipforge/2f6ac4fe-19f9-56d1-9b85-1edd19c12068/scratchpad/ff8/ffmpeg-master-latest-linux64-gpl/bin (ffmpeg N-127388, 2026-10-12)."
     },
     {
       "id": "F08",
