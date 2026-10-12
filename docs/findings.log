@@ -7,3 +7,7 @@
 2026-10-12 | F04 | reviewer | MINOR | traversal tests didn't cover the real hole (%2e%2e to workspace.parent manifest); passed on old code
 2026-10-12 | F04 | reviewer | MINOR | 300-char filename → 500 leaking absolute path
 2026-10-12 | F04 | reviewer | MINOR | non-IngestError ingest failures left job dirs; metrics and CLI ignored the job-id rule
+2026-10-12 | F05 | reviewer | MAJOR | after switching jobs, old cards stayed clickable and wrote reviews onto the new job's same clip id
+2026-10-12 | F05 | reviewer | MINOR | polling could get stuck on (render error) or off (failed first load); no retry after partial refresh failure
+2026-10-12 | F05 | tester | LOW | upload route async def runs blocking ingest on event loop → all API calls stall ~12 s
+2026-10-12 | F05 | tester | LOW | no phone layout: at 390px clip cards overflow and approve/reject are off-screen

@@ -115,7 +115,7 @@
         "When no job is running, the page makes no polling requests for 15 s (Playwright network log); polling resumes after a new upload starts and stops again once that job finishes",
         "Saving a review shows an inline 'saved' confirmation within 1 s. A failing request (e.g. server stopped) shows an inline error toast, and no browser dialog ever opens (Playwright dialog listener). The export-examples result also shows as a toast"
       ],
-      "passes": false,
+      "passes": true,
       "notes": "The frontend is a single file, so F05 -> F06 -> F07 -> F17 -> F18 -> F20 must run one after another. Keep the current visual style and CSS variables. Use the 'running' flag from F04 to decide when to poll."
     },
     {
@@ -144,7 +144,8 @@
       "priority": 6,
       "area": [
         "clipforge/server/static/index.html",
-        "tests/test_ui_static.py"
+        "tests/test_ui_static.py",
+        "clipforge/server/app.py"
       ],
       "depends_on": [
         "F06"
@@ -154,10 +155,12 @@
         "During an upload a progress indicator shows a percentage that rises to 100%, then switches to pipeline progress for the new job (Playwright)",
         "Dropping or picking a .txt or .png shows an inline 'not a video file' message and sends no request (network log)",
         "A server-side rejection (e.g. 'junk.mp4' containing text) shows the server's 400 message inline, and the upload zone returns to its normal state",
-        "Dropping two video files uploads both, one after the other, and two jobs appear"
+        "Dropping two video files uploads both, one after the other, and two jobs appear",
+        "While a 90 s video is uploading/ingesting, GET /api/jobs still answers in under 1 s (the upload route must not block the event loop) (test)",
+        "At a 390px-wide viewport the page is usable: job list and clip detail stack or toggle instead of side by side, clip cards fit the width, and approve/reject are visible without horizontal scrolling (Playwright)"
       ],
       "passes": false,
-      "notes": ""
+      "notes": " Added after F05 testing: POST /api/jobs is async def but runs blocking ingest on the event loop, stalling all requests ~12 s; and there is no mobile layout (390px makes #detail 100px wide)."
     },
     {
       "id": "F08",
