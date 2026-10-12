@@ -12,7 +12,6 @@ Highlights:
 import subprocess
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 from clipforge.common.manifest import Manifest, Stage
@@ -244,16 +243,19 @@ def test_tracked_crop_actually_moves(tmp_path):
     sendcmd-driven camera physically moved.
 
     Root cause of the old flake (F02): the TEST SOURCE was non-deterministic,
-    not the renderer. ffmpeg's `gradients` filter ignored the requested
-    x0/x1 line and drew a random gradient geometry on every generation, so
-    the red->blue transition landed anywhere from x=0 to x=~600. In ~1/3 of
-    runs it fell left of the 405px crop window, so the 0.5s frame was already
-    blue-dominant and `assert r0 > b0` failed. It was independent of load or
-    timing (reproduced on an idle machine; 10 of 30 generated sources were
-    bad). OpenCV time-seek was ruled out (CAP_PROP_POS_MSEC frames were
-    pixel-identical to sequential decode) and so were frames at crop
-    transitions (the path is smooth; sampled frames sit mid-ramp). The
-    source is now a geq-computed ramp: identical pixels every run."""
+    not the renderer. The old source used ffmpeg's `gradients` filter with
+    x1=1280 on a 1280-wide video, but the filter requires x1 < width, so
+    ffmpeg silently replaced the out-of-range x1 with an unseeded random one.
+    That put the red->blue crossover at x1/2, anywhere in [0, 640), and it
+    changed on every generation (x1=1279 gives a fixed crossover at x=640).
+    In roughly a third of runs (10 of 30 sources) the crossover fell left of
+    the 405px crop window, so the 0.5s frame was already blue-dominant and
+    `assert r0 > b0` failed. It does not depend on load or timing: it
+    reproduced on an idle machine. OpenCV time-seek was ruled out
+    (CAP_PROP_POS_MSEC frames were pixel-identical to sequential decode) and
+    so were frames at crop transitions (the path is smooth; sampled frames
+    sit mid-ramp). The source is now a geq-computed ramp: identical pixels
+    every run."""
     out = _render_gradient(tmp_path, [
         CropKeyframe(t=float(t), cx=0.15 + (0.7 / 10.0) * t)
         for t in range(11)])
