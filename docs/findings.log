@@ -2,3 +2,5 @@
 2026-10-12 | F01 | reviewer | MINOR | CLI test read real ~/clipforge-workspace (no --workspace) and swallowed all exceptions
 2026-10-12 | F01 | reviewer | MINOR | import-isolation and .env.example tests used weak checks (substring match, single stub)
 2026-10-12 | F02 | reviewer | MINOR | root-cause wording imprecise: only x1 was out of range, filter is otherwise deterministic
+2026-10-12 | F03 | reviewer | QUESTION | find_spec-based mediapipe check missed broken installs (regression vs import check)
+2026-10-12 | F03 | reviewer | MINOR | ARCHITECTURE.md overstated stage 7 reads and idempotency; missing status subcommand

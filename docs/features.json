@@ -72,7 +72,7 @@
         "docs/ARCHITECTURE.md covers each of the 7 stages: its module folder, the JSON/media files it reads and writes in the job dir, the manifest stage it sets, and its engine options including the mock",
         "Every file name, function name and CLIPFORGE_* setting that docs/ARCHITECTURE.md mentions exists in the code (a reviewer greps each one)"
       ],
-      "passes": false,
+      "passes": true,
       "notes": "pyflakes ignores '# noqa'. The 'import mediapipe' in PipelineConfig.resolve is a deliberate availability check, so rewrite it as a check pyflakes accepts. Don't delete it. Keep ARCHITECTURE.md to about one page; it describes what exists today."
     },
     {
