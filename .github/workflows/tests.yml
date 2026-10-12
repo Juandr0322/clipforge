@@ -5,9 +5,17 @@ on:
   pull_request:
 
 jobs:
+  # Linux runs the suite twice: against Ubuntu's ffmpeg (6.1, the oldest we
+  # support) and against a current static build (BtbN master, 8.x), so an
+  # option removed in one release or a changed output format is caught.
   test:
+    name: test (ffmpeg ${{ matrix.ffmpeg }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        ffmpeg: [distro, current]
     steps:
       - uses: actions/checkout@v4
 
@@ -16,8 +24,24 @@ jobs:
           python-version: "3.11"
           cache: pip
 
+      # Installed in both legs; in the "current" leg the static build below is
+      # put first on PATH and shadows it.
       - name: Install ffmpeg (with libass for captions)
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install current static ffmpeg (BtbN master build)
+        if: matrix.ffmpeg == 'current'
+        run: |
+          set -euo pipefail
+          url=https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
+          mkdir -p "$RUNNER_TEMP/ffmpeg-current"
+          curl -fsSL --retry 3 "$url" | tar -xJ -C "$RUNNER_TEMP/ffmpeg-current" --strip-components=1
+          echo "$RUNNER_TEMP/ffmpeg-current/bin" >> "$GITHUB_PATH"
+
+      - name: Show ffmpeg version
+        run: |
+          which ffmpeg ffprobe
+          ffmpeg -version | head -1
 
       - name: Install dependencies
         run: pip install -r requirements.txt pytest-github-actions-annotate-failures
@@ -49,6 +73,9 @@ jobs:
       - name: Install ffmpeg
         run: choco install ffmpeg -y
 
+      - name: Show ffmpeg version
+        run: ffmpeg -version | Select-Object -First 1
+
       - name: Install dependencies
         run: pip install -r requirements.txt pytest-github-actions-annotate-failures
 
@@ -58,4 +85,4 @@ jobs:
           CLIPFORGE_ASR: mock
           CLIPFORGE_HL: mock
           CLIPFORGE_DETECTOR: haar
-        run: python -m pytest tests/test_server.py tests/test_ui_static.py tests/test_encoding.py tests/test_cli_preflight.py -q
+        run: python -m pytest tests/test_server.py tests/test_ui_static.py tests/test_encoding.py tests/test_cli_preflight.py tests/test_ffmpeg_compat.py -q
