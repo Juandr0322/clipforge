@@ -11,6 +11,7 @@ between releases:
     whichever ffmpeg is first on PATH
 """
 import ast
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -78,8 +79,10 @@ LOUDNORM_JSON = '''{
 \t"target_offset" : "0.05"
 }'''
 
-# ffmpeg 6.1 and 8.x differ around the JSON: stats line layout, the
-# "[Parsed_loudnorm_0 @ ...]" prefix position, kB vs KiB in the summary.
+# stderr of the loudnorm analysis pass, abridged from real runs of 6.1.1 and
+# N-127388. They differ around the JSON (stats-line layout, where the
+# "[Parsed_loudnorm_0 @ ...]" prefix lands, kB vs KiB in the summary); the JSON
+# block itself is identical.
 STDERR = {
     "6.1": ("frame=   82 fps=0.0 q=-0.0 size=N/A time=00:00:02.90 bitrate=N/A "
             "speed=45.1x    [out#0/null @ 0x561827a7df80] video:422kB "
@@ -102,34 +105,19 @@ def test_measure_loudness_parses_each_ffmpeg_stderr(monkeypatch, version):
     assert render_mod.measure_loudness(Path("x.mp4")) == -21.85
 
 
-# ffprobe JSON as printed by 6.1 and 8.x for the fields parse_probe reads:
-# 8.x keeps them all but adds extra keys (e.g. "extradata_size" moves, new
-# side data), so unknown keys must be ignored.
-PROBE = {
-    "6.1": {"streams": [
-        {"index": 0, "codec_name": "h264", "codec_type": "video",
-         "width": 1280, "height": 720, "r_frame_rate": "30/1",
-         "avg_frame_rate": "30/1"},
-        {"index": 1, "codec_name": "aac", "codec_type": "audio",
-         "sample_rate": "44100", "channels": 1, "r_frame_rate": "0/0",
-         "avg_frame_rate": "0/0"}],
-        "format": {"duration": "30.000000"}},
-    "8.x": {"streams": [
-        {"index": 0, "codec_name": "h264", "codec_type": "video",
-         "width": 1280, "height": 720, "r_frame_rate": "30/1",
-         "avg_frame_rate": "30/1", "extradata_size": 41,
-         "side_data_list": [{"side_data_type": "Display Matrix"}]},
-        {"index": 1, "codec_name": "aac", "codec_type": "audio",
-         "sample_rate": "44100", "channels": 1, "r_frame_rate": "0/0",
-         "avg_frame_rate": "0/0", "initial_padding": 0}],
-        "format": {"duration": "30.000000", "probe_score": 100}},
-}
+# `ffprobe -v error -show_streams -show_format -of json tests/fixtures/speech_30s.mp4`
+# captured from ffprobe 6.1.1-3ubuntu5 and N-127388-g615b07170e-20261012, then
+# trimmed to the fields the code reads. Both builds printed the same values
+# for those fields, so the two entries are the same capture; the real-ffprobe
+# test below is what re-checks this on whichever build runs the suite.
+CAPTURED = json.loads('''{"streams": [{"index": 0, "codec_name": "h264", "codec_type": "video", "width": 640, "height": 360, "r_frame_rate": "30/1", "avg_frame_rate": "30/1"}, {"index": 1, "codec_name": "aac", "codec_type": "audio", "r_frame_rate": "0/0", "avg_frame_rate": "0/0", "sample_rate": "44100", "channels": 1}], "format": {"duration": "30.000000", "format_name": "mov,mp4,m4a,3gp,3g2,mj2", "nb_streams": 2}}''')
+PROBE = {"6.1.1": CAPTURED, "N-127388": CAPTURED}
 
 
 @pytest.mark.parametrize("version", PROBE)
 def test_parse_probe_reads_each_ffprobe_json(version):
     pr = parse_probe(PROBE[version])
-    assert (pr.width, pr.height, pr.fps, pr.duration) == (1280, 720, 30.0, 30.0)
+    assert (pr.width, pr.height, pr.fps, pr.duration) == (640, 360, 30.0, 30.0)
     assert (pr.video_codec, pr.audio_codec) == ("h264", "aac")
     assert (pr.audio_sample_rate, pr.audio_channels) == (44100, 1)
 

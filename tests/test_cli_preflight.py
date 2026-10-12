@@ -124,8 +124,56 @@ def test_parse_ffmpeg_version(banner):
     assert cli.parse_ffmpeg_version(banner) == BANNERS[banner]
 
 
+@pytest.fixture(autouse=True)
+def fresh_version_cache():
+    cli.ffmpeg_version.cache_clear()
+    yield
+    cli.ffmpeg_version.cache_clear()
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("2024-05-13-git-37db0454e4-full_build-www.gyan.dev", (2024, 5, 13)),
+    ("N-127388-g615b07170e-20261012", (2026, 10, 12)),
+    ("N-127388-g615b07170e", None), ("6.1.1-3ubuntu5", None),
+    ("N-1-gabc-20261399", None)])
+def test_ffmpeg_build_date(text, expected):
+    got = cli.ffmpeg_build_date(text)
+    assert (got and (got.year, got.month, got.day)) == (expected or None)
+
+
+@pytest.mark.parametrize("banner,refused", [
+    ("ffmpeg version 2022-06-30-git-aaaaaaaaaa-full_build-www.gyan.dev", True),
+    ("ffmpeg version N-106000-gabcdef1234-20220101", True),
+    ("ffmpeg version 2022-07-01-git-aaaaaaaaaa-essentials_build", False),
+    ("ffmpeg version N-127388-g615b07170e-20261012", False),
+    ("ffmpeg version N-127388-g615b07170e", False)])   # undated: allowed
+def test_git_builds_judged_by_build_date(monkeypatch, banner, refused):
+    fake_version(monkeypatch, banner)
+    msg = cli.ffmpeg_problem()
+    assert bool(msg) is refused
+    if refused:
+        assert "too old" in msg and "5.1 or newer" in msg
+
+
+def test_ffmpeg_version_runs_ffmpeg_once_per_command(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **k):
+        calls.append(cmd)
+        return cli.subprocess.CompletedProcess(
+            cmd, 0, "ffmpeg version 8.0 Copyright\nmore\n", "")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli.shutil, "which", lambda n, *a, **k: f"/bin/{n}")
+    assert cli.ffmpeg_problem() is None
+    cli.report_ffmpeg()
+    cli.ffmpeg_version()
+    assert calls == [["ffmpeg", "-version"]]
+
+
 def fake_version(monkeypatch, banner):
     monkeypatch.setattr(cli.shutil, "which", lambda n, *a, **k: f"/bin/{n}")
+    cli.ffmpeg_version.cache_clear()
     monkeypatch.setattr(cli, "ffmpeg_version",
                         lambda: cli.parse_ffmpeg_version(banner))
 

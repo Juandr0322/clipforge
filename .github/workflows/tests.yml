@@ -29,19 +29,30 @@ jobs:
       - name: Install ffmpeg (with libass for captions)
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
+      # Deliberately the moving "latest" build: this leg exists to catch the
+      # next ffmpeg change early. (Pinning an autobuild tag needs the GitHub
+      # releases API, which was not reachable when this was written.) The
+      # tarball is checked against the sha256 the same release publishes, so a
+      # truncated or mixed-up download fails here rather than as odd test errors.
       - name: Install current static ffmpeg (BtbN master build)
         if: matrix.ffmpeg == 'current'
         run: |
           set -euo pipefail
-          url=https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
-          mkdir -p "$RUNNER_TEMP/ffmpeg-current"
-          curl -fsSL --retry 3 "$url" | tar -xJ -C "$RUNNER_TEMP/ffmpeg-current" --strip-components=1
-          echo "$RUNNER_TEMP/ffmpeg-current/bin" >> "$GITHUB_PATH"
+          base=https://github.com/BtbN/FFmpeg-Builds/releases/download/latest
+          tarball=ffmpeg-master-latest-linux64-gpl.tar.xz
+          dest="$RUNNER_TEMP/ffmpeg-current"
+          mkdir -p "$dest"
+          curl -fsSL --retry 3 -o "$dest/$tarball" "$base/$tarball"
+          curl -fsSL --retry 3 -o "$dest/checksums.sha256" "$base/checksums.sha256"
+          (cd "$dest" && grep " $tarball\$" checksums.sha256 | sha256sum -c -)
+          tar -xJf "$dest/$tarball" -C "$dest" --strip-components=1
+          echo "$dest/bin" >> "$GITHUB_PATH"
 
       - name: Show ffmpeg version
         run: |
           which ffmpeg ffprobe
           ffmpeg -version | head -1
+          ffprobe -version | head -1
 
       - name: Install dependencies
         run: pip install -r requirements.txt pytest-github-actions-annotate-failures
@@ -74,7 +85,9 @@ jobs:
         run: choco install ffmpeg -y
 
       - name: Show ffmpeg version
-        run: ffmpeg -version | Select-Object -First 1
+        run: |
+          (ffmpeg -version)[0]
+          (ffprobe -version)[0]
 
       - name: Install dependencies
         run: pip install -r requirements.txt pytest-github-actions-annotate-failures
