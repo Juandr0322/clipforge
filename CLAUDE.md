@@ -5,7 +5,8 @@ AI pipeline that turns long streams/podcasts into captioned vertical clips, plus
 <!-- Agents copy these exactly. -->
 - Install: `pip install -r requirements.txt` (needs ffmpeg on PATH; OpenCV must stay < 5)
 - Dev server (review website): `CLIPFORGE_ASR=mock CLIPFORGE_HL=mock CLIPFORGE_DETECTOR=haar python -m clipforge.cli serve` → http://localhost:8000
-- Tests: `python -m pytest tests/ -q` (offline, mock engines, ~3 min)
+- Tests: `python -m pytest tests/ -q` (offline, mock engines, ~4 min)
+- Browser tests (after any server/ or static/ change): `CLIPFORGE_BROWSER_TESTS=1 python -m pytest tests/test_ui_browser.py -q` (~10–15 min)
 - Quick tests for one area: `python -m pytest tests/test_server.py -q`
 - Lint: `python -m pyflakes clipforge tests`
 

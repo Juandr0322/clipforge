@@ -29,7 +29,9 @@ Target: `$ARGUMENTS` — a feature id like `F03`, `next`, or `parallel 3` (up to
 
 ## 4. Merge, then test
 - `git merge --no-ff <branch>` into main. On a conflict, resume the builder to rebase and resolve.
-- Spawn the `tester` with the feature id. VERDICT: FAIL → resume the builder with the report, then review and test again. This counts toward the 2-round limit.
+- Run the full suite yourself on merged main (`python -m pytest tests/ -q`, plus the browser tests if the feature touched `clipforge/server/`).
+- If the feature's `area` touches `clipforge/server/` or `clipforge/server/static/`: spawn the `tester` with the feature id, and tell it you already ran the full suite. Pipeline-only features skip the tester; instead run one real mock pipeline end to end (`CLIPFORGE_ASR=mock CLIPFORGE_HL=mock CLIPFORGE_DETECTOR=haar python -m clipforge.cli pipeline <job>` on a short ffmpeg testsrc video in a temp workspace) and check the outputs the feature promises exist. Review stays mandatory for every feature.
+- Tester VERDICT: FAIL → resume the builder with the report, then review and test again. This counts toward the 2-round limit.
 
 ## 5. Close out
 - Pass: set `passes: true` in `docs/features.json`, add a 1–2 line entry at the top of `docs/progress.md`, commit.
