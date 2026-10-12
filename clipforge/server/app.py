@@ -15,15 +15,19 @@ from __future__ import annotations
 import shutil
 import threading
 import traceback
+import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi import Path as PathParam
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-from clipforge.common.manifest import Manifest, Stage
+from clipforge.common.manifest import (
+    Manifest, Stage, is_safe_job_id, new_job_id,
+)
 from clipforge.highlight.schema import CandidateSet
-from clipforge.ingest.ingest import IngestError, ingest
+from clipforge.ingest.ingest import SUPPORTED_EXTENSIONS, IngestError, ingest
 from clipforge.pipeline import PipelineConfig, run_pipeline
 from clipforge.refine.refine import RefinedSet
 from clipforge.review.store import (
@@ -32,6 +36,20 @@ from clipforge.review.store import (
 )
 
 STATIC = Path(__file__).parent / "static"
+
+MAX_STEM_CHARS = 100
+
+
+def _clean_filename(raw: str | None) -> str:
+    """Last path component of an uploaded filename ('' if there is none).
+
+    The stem is truncated so a very long name can't exceed filesystem limits;
+    the extension is kept."""
+    name = Path((raw or "").replace("\\", "/")).name
+    if name in (".", ".."):
+        return ""
+    p = Path(name)
+    return p.stem[:MAX_STEM_CHARS] + p.suffix[:16]
 
 
 class ReviewIn(BaseModel):
@@ -49,16 +67,19 @@ def create_app(workspace: Path, config: PipelineConfig | None = None,
     cfg = config or PipelineConfig()
     app = FastAPI(title="ClipForge")
     progress: dict[str, str] = {}       # job_id -> live status line
+    running: set[str] = set()           # job_ids whose pipeline is executing
+    running_lock = threading.Lock()
 
     # ------------------------------------------------------------- helpers
 
     def job_dir(job_id: str) -> Path:
         d = workspace / job_id
-        if not (d / "manifest.json").exists():
-            raise HTTPException(404, f"unknown job: {job_id}")
+        if not is_safe_job_id(job_id) or not (d / "manifest.json").exists():
+            raise HTTPException(404, "unknown job")
         return d
 
     def run_bg(jid: str) -> None:
+        # caller has already added jid to `running`
         try:
             progress[jid] = "starting…"
             run_pipeline(workspace / jid, cfg,
@@ -66,6 +87,21 @@ def create_app(workspace: Path, config: PipelineConfig | None = None,
         except Exception:  # noqa: BLE001 — error already in manifest
             progress[jid] = "failed"
             traceback.print_exc()
+        finally:
+            with running_lock:
+                running.discard(jid)
+
+    def start_run(jid: str) -> bool:
+        """Start the pipeline for jid unless it is already running."""
+        with running_lock:
+            if jid in running:
+                return False
+            running.add(jid)
+        if sync_pipeline:
+            run_bg(jid)
+        else:
+            threading.Thread(target=run_bg, args=(jid,), daemon=True).start()
+        return True
 
     # -------------------------------------------------------------- routes
 
@@ -75,40 +111,52 @@ def create_app(workspace: Path, config: PipelineConfig | None = None,
 
     @app.post("/api/jobs")
     async def create_job(file: UploadFile):
+        name = _clean_filename(file.filename)
+        ext = Path(name).suffix.lower()
+        if ext not in SUPPORTED_EXTENSIONS:
+            raise HTTPException(
+                400, f"Unsupported file type '{ext}'. Accepted video types: "
+                     f"{', '.join(sorted(SUPPORTED_EXTENSIONS))}")
         # stage under the ORIGINAL filename so the manifest records it
-        import uuid
         stage_dir = workspace / ".uploads" / uuid.uuid4().hex[:8]
         stage_dir.mkdir(parents=True, exist_ok=True)
-        tmp = stage_dir / Path(file.filename).name
-        with tmp.open("wb") as f:
-            shutil.copyfileobj(file.file, f)
+        jid = new_job_id()
         try:
-            m = ingest(tmp, workspace)
-        except IngestError as e:
-            raise HTTPException(400, str(e))
+            tmp = stage_dir / name
+            try:
+                with tmp.open("wb") as f:
+                    shutil.copyfileobj(file.file, f)
+            except OSError:
+                raise HTTPException(400, "Could not store the uploaded file")
+            if tmp.stat().st_size == 0:
+                raise HTTPException(400, "Uploaded file is empty")
+            try:
+                m = ingest(tmp, workspace, job_id=jid)
+            except IngestError as e:
+                shutil.rmtree(workspace / jid, ignore_errors=True)
+                raise HTTPException(400, str(e))
+            except Exception:  # noqa: BLE001 — don't leak internals
+                shutil.rmtree(workspace / jid, ignore_errors=True)
+                traceback.print_exc()
+                raise HTTPException(500, "Could not process the upload")
         finally:
             shutil.rmtree(stage_dir, ignore_errors=True)
-        if sync_pipeline:
-            run_bg(m.job_id)
-        else:
-            threading.Thread(target=run_bg, args=(m.job_id,),
-                             daemon=True).start()
+        start_run(m.job_id)
         return {"job_id": m.job_id}
 
     @app.post("/api/jobs/{jid}/rerun")
     def rerun(jid: str):
         job_dir(jid)
-        if sync_pipeline:
-            run_bg(jid)
-        else:
-            threading.Thread(target=run_bg, args=(jid,), daemon=True).start()
+        if not start_run(jid):
+            raise HTTPException(409, "job is already running")
         return {"ok": True}
 
     @app.get("/api/jobs")
     def list_jobs():
         out = []
         for d in sorted(workspace.iterdir(), reverse=True):
-            if not (d / "manifest.json").exists():
+            if not is_safe_job_id(d.name) or \
+                    not (d / "manifest.json").exists():
                 continue
             m = Manifest.load(d)
             out.append({
@@ -117,6 +165,7 @@ def create_app(workspace: Path, config: PipelineConfig | None = None,
                 "failed": m.is_failed,
                 "error": m.error,
                 "progress": progress.get(m.job_id, ""),
+                "running": m.job_id in running,
                 "filename": m.source.original_filename if m.source else "?",
                 "duration": m.source.duration_sec if m.source else 0,
             })
@@ -130,6 +179,7 @@ def create_app(workspace: Path, config: PipelineConfig | None = None,
             "job_id": m.job_id, "stage": m.stage.value,
             "failed": m.is_failed, "error": m.error,
             "progress": progress.get(jid, ""),
+            "running": jid in running,
             "source": m.source.model_dump() if m.source else None,
             "history": [h.model_dump() for h in m.history],
             "clips": [], "metrics": None,
@@ -157,21 +207,21 @@ def create_app(workspace: Path, config: PipelineConfig | None = None,
         return detail
 
     @app.get("/api/jobs/{jid}/clips/{cid}/video")
-    def clip_video(jid: str, cid: int):
+    def clip_video(jid: str, cid: int = PathParam(ge=0)):
         p = job_dir(jid) / "renders" / f"clip_{cid:03d}.mp4"
         if not p.exists():
             raise HTTPException(404, "clip not rendered yet")
         return FileResponse(p, media_type="video/mp4")
 
     @app.get("/api/jobs/{jid}/clips/{cid}/qa")
-    def clip_qa(jid: str, cid: int):
+    def clip_qa(jid: str, cid: int = PathParam(ge=0)):
         p = job_dir(jid) / "renders" / f"clip_{cid:03d}_qa.png"
         if not p.exists():
             raise HTTPException(404, "no QA sheet")
         return FileResponse(p, media_type="image/png")
 
     @app.post("/api/jobs/{jid}/clips/{cid}/review")
-    def review_clip(jid: str, cid: int, body: ReviewIn):
+    def review_clip(jid: str, cid: int = PathParam(ge=0), *, body: ReviewIn):
         if body.decision not in ("approved", "rejected"):
             raise HTTPException(400, "decision must be approved|rejected")
         d = job_dir(jid)

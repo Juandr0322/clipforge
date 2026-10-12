@@ -15,7 +15,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from clipforge.common.manifest import Manifest
+from clipforge.common.manifest import Manifest, is_safe_job_id
 from clipforge.refine.refine import RefinedSet
 from clipforge.transcribe.schema import Transcript
 
@@ -92,7 +92,8 @@ def workspace_metrics(workspace: Path) -> dict:
     """Aggregate metrics across all jobs — track these over time."""
     per_job, tot_rev, tot_app, trims = {}, 0, 0, []
     for job_dir in sorted(Path(workspace).iterdir()):
-        if not (job_dir / "manifest.json").exists():
+        if not is_safe_job_id(job_dir.name) or \
+                not (job_dir / "manifest.json").exists():
             continue
         jm = job_metrics(job_dir)
         if jm["reviewed"]:

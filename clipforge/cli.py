@@ -10,7 +10,7 @@ import json
 import sys
 from pathlib import Path
 
-from clipforge.common.manifest import Manifest
+from clipforge.common.manifest import Manifest, is_safe_job_id
 from clipforge.ingest.ingest import IngestError, ingest
 from clipforge.settings import load_env
 
@@ -85,6 +85,12 @@ def main() -> int:
     args = p.parse_args()
 
     if args.cmd == "ingest":
+        if args.job_id is not None and not is_safe_job_id(args.job_id):
+            print(f"INGEST FAILED: invalid --job-id {args.job_id!r}: use "
+                  "letters, digits, '-' and '_', starting with a letter or "
+                  "digit (other ids are invisible to the review website)",
+                  file=sys.stderr)
+            return 2
         try:
             m = ingest(args.video, args.workspace,
                        job_id=args.job_id, force=args.force)

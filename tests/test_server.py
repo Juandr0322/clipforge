@@ -211,3 +211,292 @@ def test_review_store_roundtrip(tmp_path):
 def test_metrics_empty_job(tmp_path):
     m = job_metrics(tmp_path)
     assert m["reviewed"] == 0 and m["approval_rate"] is None
+
+
+# ------------------------------------------------------- F04: hardening
+
+@pytest.fixture()
+def fresh(tmp_path):
+    """A private workspace (inside tmp_path) and an app that runs inline."""
+    ws = tmp_path / "ws"
+    app = create_app(ws, config=MOCK_CFG, sync_pipeline=True)
+    return ws, TestClient(app, raise_server_exceptions=False)
+
+
+def _job_dirs(ws):
+    return sorted(p.name for p in ws.iterdir() if not p.name.startswith("."))
+
+
+def _uploads_empty(ws):
+    up = ws / ".uploads"
+    return not up.exists() or not any(up.iterdir())
+
+
+def test_job_id_check():
+    from clipforge.common.manifest import is_safe_job_id, new_job_id
+    for bad in ["..", ".", ".uploads", ".hidden", "a/b", "a\\b", "", "a b",
+                "../x"]:
+        assert not is_safe_job_id(bad), bad
+    for _ in range(5):
+        assert is_safe_job_id(new_job_id())
+    assert is_safe_job_id("orch")
+
+
+@pytest.mark.parametrize("bad", ["..", ".uploads", ".hidden", "%2e%2e",
+                                 "a%2fb", "a%5cb", "..%2foutside"])
+def test_unsafe_job_ids_get_404(fresh, bad):
+    ws, c = fresh
+    routes = [("get", "/api/jobs/{}"), ("post", "/api/jobs/{}/rerun"),
+              ("get", "/api/jobs/{}/clips/0/video"),
+              ("get", "/api/jobs/{}/clips/0/qa"),
+              ("post", "/api/jobs/{}/export-examples")]
+    for method, tmpl in routes:
+        r = getattr(c, method)(tmpl.format(bad))
+        assert r.status_code in (400, 404), (tmpl, bad, r.status_code)
+    r = c.post(f"/api/jobs/{bad}/clips/0/review", json={"decision": "approved"})
+    assert r.status_code in (400, 404)
+
+
+def test_manifest_outside_workspace_is_unreachable(tmp_path, source_video):
+    from clipforge.ingest.ingest import ingest
+    ws = tmp_path / "ws"
+    app = create_app(ws, config=MOCK_CFG, sync_pipeline=True)
+    c = TestClient(app, raise_server_exceptions=False)
+    # a complete, valid job that lives NEXT TO the workspace, not in it
+    ingest(source_video, tmp_path, job_id="outside")
+    renders = tmp_path / "outside" / "renders"
+    renders.mkdir()
+    (renders / "clip_000.mp4").write_bytes(b"x" * 100)
+    (renders / "clip_000_qa.png").write_bytes(b"x" * 100)
+    assert (tmp_path / "outside" / "manifest.json").exists()
+
+    for jid in ["..%2foutside", "%2e%2e%2foutside", "..\\outside",
+                "../outside", "outside"]:
+        for url in [f"/api/jobs/{jid}", f"/api/jobs/{jid}/clips/0/video",
+                    f"/api/jobs/{jid}/clips/0/qa"]:
+            assert c.get(url).status_code in (400, 404), url
+        assert c.post(f"/api/jobs/{jid}/rerun").status_code in (400, 404)
+        assert c.post(f"/api/jobs/{jid}/export-examples").status_code in (400, 404)
+        assert c.post(f"/api/jobs/{jid}/clips/0/review",
+                      json={"decision": "approved"}).status_code in (400, 404)
+    assert c.get("/api/jobs").json() == []
+    assert c.get("/api/metrics").json()["total_reviewed"] == 0
+
+
+@pytest.mark.parametrize("name,ctype,data", [
+    ("notes.txt", "text/plain", b"hello"),
+    ("pic.png", "image/png", b"\x89PNG\r\n\x1a\n" + b"0" * 50),
+    ("empty.mp4", "video/mp4", b""),
+    ("", "video/mp4", b"abc"),
+    ("..", "video/mp4", b"abc"),
+    ("../../x.mp4", "video/mp4", b"not a video"),
+    ("..\\..\\x.mp4", "video/mp4", b"not a video"),
+])
+def test_bad_uploads_rejected_cleanly(fresh, name, ctype, data):
+    ws, c = fresh
+    r = c.post("/api/jobs", files={"file": (name, data, ctype)})
+    assert r.status_code in (400, 422), r.text
+    assert _job_dirs(ws) == []
+    assert _uploads_empty(ws)
+    assert not (ws.parent / "x.mp4").exists()
+
+
+def test_non_video_message_names_accepted_types(fresh):
+    ws, c = fresh
+    r = c.post("/api/jobs", files={"file": ("notes.txt", b"hi", "text/plain")})
+    assert r.status_code == 400
+    assert ".mp4" in r.json()["detail"] and ".mov" in r.json()["detail"]
+
+
+def test_traversal_filename_is_stored_safely(fresh, source_video, monkeypatch):
+    from clipforge.server import app as appmod
+    monkeypatch.setattr(appmod, "run_pipeline", lambda d, cfg, progress=None: None)
+    ws, c = fresh
+    with source_video.open("rb") as f:
+        r = c.post("/api/jobs", files={"file": ("../../evil.mp4", f, "video/mp4")})
+    assert r.status_code == 200, r.text
+    assert not (ws.parent / "evil.mp4").exists()
+    detail = c.get(f"/api/jobs/{r.json()['job_id']}").json()
+    assert detail["source"]["original_filename"] == "evil.mp4"
+
+
+def test_running_flag_false_after_sync_upload(fresh, source_video,
+                                              monkeypatch):
+    from clipforge.server import app as appmod
+    seen = []
+    monkeypatch.setattr(appmod, "run_pipeline",
+                        lambda d, cfg, progress=None: seen.append(d.name))
+    ws, c = fresh
+    with source_video.open("rb") as f:
+        jid = c.post("/api/jobs",
+                     files={"file": ("a.mp4", f, "video/mp4")}).json()["job_id"]
+    assert seen == [jid]                         # the pipeline did run inline
+    assert c.get(f"/api/jobs/{jid}").json()["running"] is False
+    jobs = c.get("/api/jobs").json()
+    assert jobs[0]["running"] is False
+
+
+def test_rerun_while_running_is_409(tmp_path, source_video, monkeypatch):
+    import threading
+    from clipforge.ingest.ingest import ingest
+    from clipforge.server import app as appmod
+
+    started, release = threading.Event(), threading.Event()
+    calls = []
+
+    def blocking_pipeline(job_dir, cfg, progress=None):
+        calls.append(job_dir)
+        started.set()
+        assert release.wait(30)
+
+    monkeypatch.setattr(appmod, "run_pipeline", blocking_pipeline)
+    ws = tmp_path / "ws"
+    c = TestClient(create_app(ws, config=MOCK_CFG, sync_pipeline=False),
+                   raise_server_exceptions=False)
+    ingest(source_video, ws, job_id="job1")
+
+    assert c.post("/api/jobs/job1/rerun").status_code == 200
+    assert started.wait(10)
+    assert c.get("/api/jobs/job1").json()["running"] is True
+    assert [j["running"] for j in c.get("/api/jobs").json()] == [True]
+
+    assert c.post("/api/jobs/job1/rerun").status_code == 409
+    assert len(calls) == 1                       # no second run started
+
+    release.set()
+    for _ in range(100):                         # wait for the flag to clear
+        if not c.get("/api/jobs/job1").json()["running"]:
+            break
+        threading.Event().wait(0.05)
+    assert c.get("/api/jobs/job1").json()["running"] is False
+    started.clear()
+    assert c.post("/api/jobs/job1/rerun").status_code == 200   # allowed again
+    assert started.wait(10)
+    assert len(calls) == 2
+
+
+def test_running_flag_clears_when_pipeline_raises(tmp_path, source_video,
+                                                  monkeypatch):
+    from clipforge.ingest.ingest import ingest
+    from clipforge.server import app as appmod
+
+    def boom(job_dir, cfg, progress=None):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(appmod, "run_pipeline", boom)
+    ws = tmp_path / "ws"
+    c = TestClient(create_app(ws, config=MOCK_CFG, sync_pipeline=True),
+                   raise_server_exceptions=False)
+    ingest(source_video, ws, job_id="job1")
+    assert c.post("/api/jobs/job1/rerun").status_code == 200
+    assert c.get("/api/jobs/job1").json()["running"] is False
+    assert c.post("/api/jobs/job1/rerun").status_code == 200
+
+
+@pytest.fixture(scope="module")
+def ingested_job(tmp_path_factory, source_video):
+    from clipforge.ingest.ingest import ingest
+    ws = tmp_path_factory.mktemp("ws_ingested")
+    c = TestClient(create_app(ws, config=MOCK_CFG, sync_pipeline=True),
+                   raise_server_exceptions=False)
+    return c, ingest(source_video, ws, job_id="job1").job_id
+
+
+@pytest.mark.parametrize("cid", ["-1", "-5", "abc", "1.5"])
+def test_bad_clip_ids_are_404_or_422(ingested_job, cid):
+    client, jid = ingested_job
+    assert client.get(f"/api/jobs/{jid}/clips/{cid}/video").status_code in (404, 422)
+    assert client.get(f"/api/jobs/{jid}/clips/{cid}/qa").status_code in (404, 422)
+    r = client.post(f"/api/jobs/{jid}/clips/{cid}/review",
+                    json={"decision": "approved"})
+    assert r.status_code in (404, 422)
+
+
+def test_manifest_in_workspace_parent_unreachable_via_dotdot(tmp_path):
+    """Regression for the original hole: /api/jobs/%2e%2e resolved to the
+    workspace's PARENT, so a manifest.json there was served as a job."""
+    from clipforge.common.manifest import Manifest
+    ws = tmp_path / "ws"
+    c = TestClient(create_app(ws, config=MOCK_CFG, sync_pipeline=True),
+                   raise_server_exceptions=False)
+    Manifest(job_id="parent").save(tmp_path)          # tmp_path/manifest.json
+    assert (tmp_path / "manifest.json").exists()
+    (tmp_path / "renders").mkdir()
+    (tmp_path / "renders" / "clip_000.mp4").write_bytes(b"x" * 100)
+    (tmp_path / "renders" / "clip_000_qa.png").write_bytes(b"x" * 100)
+
+    jid = "%2e%2e"
+    assert c.get(f"/api/jobs/{jid}").status_code == 404
+    assert c.post(f"/api/jobs/{jid}/rerun").status_code == 404
+    assert c.get(f"/api/jobs/{jid}/clips/0/video").status_code == 404
+    assert c.get(f"/api/jobs/{jid}/clips/0/qa").status_code == 404
+    assert c.post(f"/api/jobs/{jid}/clips/0/review",
+                  json={"decision": "approved"}).status_code == 404
+    assert c.post(f"/api/jobs/{jid}/export-examples").status_code == 404
+    assert not (tmp_path / "reviews.json").exists()
+
+
+def test_very_long_filename_is_not_a_500(fresh, source_video, monkeypatch):
+    from clipforge.server import app as appmod
+    monkeypatch.setattr(appmod, "run_pipeline", lambda d, cfg, progress=None: None)
+    ws, c = fresh
+    long_name = "a" * 300 + ".mp4"
+    with source_video.open("rb") as f:
+        r = c.post("/api/jobs", files={"file": (long_name, f, "video/mp4")})
+    assert r.status_code in (200, 400), r.text
+    if r.status_code == 200:
+        fn = c.get(f"/api/jobs/{r.json()['job_id']}").json()["source"][
+            "original_filename"]
+        assert fn.endswith(".mp4") and len(fn) < 200
+    assert str(ws) not in r.text
+    # a long name with no usable extension is a clean 400
+    r = c.post("/api/jobs", files={"file": ("b" * 300, b"abc", "video/mp4")})
+    assert r.status_code == 400 and str(ws) not in r.text
+    assert _uploads_empty(ws)
+
+
+def test_unexpected_ingest_error_cleans_up(fresh, monkeypatch):
+    from clipforge.server import app as appmod
+
+    def boom(src, workspace, job_id=None, force=False):
+        (workspace / job_id).mkdir(parents=True)        # half-made job dir
+        (workspace / job_id / "source.mp4").write_bytes(b"x")
+        raise ValueError(f"bad thing at {src}")
+
+    monkeypatch.setattr(appmod, "ingest", boom)
+    ws, c = fresh
+    r = c.post("/api/jobs", files={"file": ("a.mp4", b"abc", "video/mp4")})
+    assert r.status_code in (400, 500)
+    assert "bad thing" not in r.text and str(ws) not in r.text
+    assert _job_dirs(ws) == []
+    assert _uploads_empty(ws)
+
+
+def test_workspace_metrics_skips_unsafe_dirs(tmp_path):
+    from clipforge.common.manifest import Manifest
+    from clipforge.review.store import workspace_metrics
+    for name in ("good", ".hidden", "has space"):
+        d = tmp_path / name
+        Manifest(job_id=name).save(d)
+        rs = ReviewSet()
+        rs.upsert(Review(clip_id=0, decision="approved"))
+        save_reviews(d, rs)
+    m = workspace_metrics(tmp_path)
+    assert list(m["per_job"]) == ["good"]
+    assert m["jobs_with_reviews"] == 1 and m["total_reviewed"] == 1
+
+
+@pytest.mark.parametrize("bad", ["..", ".hidden", "a/b", "a b", ""])
+def test_cli_ingest_rejects_unsafe_job_id(tmp_path, monkeypatch, capsys, bad):
+    import sys
+    from clipforge import cli
+    monkeypatch.setattr(cli, "load_env", lambda *a, **k: None)
+    called = []
+    monkeypatch.setattr(cli, "ingest", lambda *a, **k: called.append(1))
+    monkeypatch.setattr(sys, "argv", ["clipforge", "ingest", "v.mp4",
+                                      "--workspace", str(tmp_path / "ws"),
+                                      "--job-id", bad])
+    assert cli.main() != 0
+    assert not called
+    assert "job-id" in capsys.readouterr().err
+    assert not (tmp_path / "ws").exists()
