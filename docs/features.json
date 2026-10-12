@@ -166,6 +166,28 @@
       "notes": " Added after F05 testing: POST /api/jobs is async def but runs blocking ingest on the event loop, stalling all requests ~12 s; and there is no mobile layout (390px makes #detail 100px wide). Added after F06 testing: load_reviews/upsert/save_reviews are unlocked and share one reviews.json.tmp, so concurrent saves lose updates or 500 (FileNotFoundError on rename). Use a per-job lock in the server and a unique temp file per write."
     },
     {
+      "id": "F21",
+      "title": "Windows compatibility: UTF-8 file I/O everywhere, guard test, and a Windows CI job",
+      "priority": 0,
+      "area": [
+        "clipforge/**/*.py",
+        "tests/test_encoding.py",
+        ".github/workflows/tests.yml"
+      ],
+      "depends_on": [
+        "F07"
+      ],
+      "acceptance": [
+        "With Python's default text encoding forced to cp1252 (simulate Windows, e.g. run a subprocess with PYTHONUTF8=0 and monkeypatched locale or by wrapping io.text_encoding), GET / returns 200 and the page contains the UTF-8 characters intact (test)",
+        "Every text-mode read_text/write_text/open in clipforge/ passes encoding='utf-8' (or is binary); tests/test_encoding.py scans the source with ast and fails on any text-mode call without an explicit encoding",
+        "A transcript, hook, note and example file containing non-ASCII text (emoji, accented letters, curly quotes) round-trips through save/load and through export_examples unchanged (test)",
+        "The rendered .ass subtitle file is written as UTF-8 so libass shows accented captions correctly (test reads the bytes)",
+        ".github/workflows/tests.yml gains a windows-latest job that installs ffmpeg and runs at least tests/test_server.py, tests/test_ui_static.py and tests/test_encoding.py (and the full suite if it passes there); the Linux job is unchanged"
+      ],
+      "passes": false,
+      "notes": "Reported by Diego: localhost doesn't run on his Windows PC. Root cause found by the lead: app.py index() does (STATIC/'index.html').read_text() with no encoding; on Windows Python defaults to cp1252, and index.html contains byte 0x9D (from a right curly quote) which cp1252 can't decode -> 500 on GET /. ~20 other read_text/write_text calls have the same issue (JSON stores, .ass captions, few-shot examples). Workaround until merged: PYTHONUTF8=1."
+    },
+    {
       "id": "F08",
       "title": "Platform profiles: one settings file per platform, read by later steps",
       "priority": 7,
