@@ -183,11 +183,21 @@ def test_loudness_normalized(rendered_env):
 # --------------------------------------------- moving camera pixel proof
 
 def hue_gradient_video(path: Path, dur=12):
-    """1280x720 video where color depends on X: left=red, right=blue."""
+    """1280x720 video where color depends only on X: left=red, right=blue.
+
+    Deterministic by construction: the ramp is computed per pixel by geq
+    (red = 255*(1-X/W), blue = 255*X/W), written to one PNG, and looped. The
+    old source, ffmpeg's `gradients` filter, picked a random gradient
+    geometry on every run (see test_tracked_crop_actually_moves)."""
+    png = path.with_suffix(".png")
     subprocess.run([
         "ffmpeg", "-y", "-f", "lavfi",
-        "-i", f"gradients=size=1280x720:duration={dur}:rate=30:"
-              f"c0=red:c1=blue:x0=0:y0=360:x1=1280:y1=360:speed=0.00001",
+        "-i", "color=c=black:s=1280x720:r=30,format=gbrp,"
+              "geq=r='255*(1-X/W)':g='0':b='255*X/W'",
+        "-frames:v", "1", str(png)], check=True, capture_output=True)
+    subprocess.run([
+        "ffmpeg", "-y", "-loop", "1", "-framerate", "30", "-t", str(dur),
+        "-i", str(png),
         "-f", "lavfi", "-i", f"sine=frequency=300:duration={dur}",
         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-shortest", str(path)],
@@ -205,23 +215,66 @@ def mean_rb(video: Path, t: float) -> tuple[float, float]:
     return float(frame[:, :, 2].mean()), float(frame[:, :, 0].mean())
 
 
+def camera_motion_report(video: Path) -> tuple[bool, str]:
+    """Did the camera move left->right? True only if an early frame is
+    red-dominant AND a late frame is blue-dominant. Returns (moved, reason)."""
+    r0, b0 = mean_rb(video, 0.5)
+    r1, b1 = mean_rb(video, 9.5)
+    if not r0 > b0:
+        return False, "early frame should be red-dominant (camera left)"
+    if not b1 > r1:
+        return False, "did not move: late frame should be blue-dominant"
+    return True, "moved"
+
+
+def _render_gradient(tmp_path: Path, keyframes: list[CropKeyframe]) -> Path:
+    src = tmp_path / "grad.mp4"
+    hue_gradient_video(src)
+    out = tmp_path / "out.mp4"
+    render_clip(src, out, start=0.5, end=11.0,
+                crop=CropPath(clip_id=0, mode="tracked", keyframes=keyframes),
+                src_w=1280, src_h=720, fps=30.0)
+    verify_render(out, 10.5)
+    return out
+
+
 def test_tracked_crop_actually_moves(tmp_path):
     """Render with a left->right tracked path over a red->blue gradient.
     Early output frames must be redder; late frames bluer. This proves the
-    sendcmd-driven camera physically moved."""
-    src = tmp_path / "grad.mp4"
-    hue_gradient_video(src)
-    crop = CropPath(clip_id=0, mode="tracked", keyframes=[
+    sendcmd-driven camera physically moved.
+
+    Root cause of the old flake (F02): the TEST SOURCE was non-deterministic,
+    not the renderer. ffmpeg's `gradients` filter ignored the requested
+    x0/x1 line and drew a random gradient geometry on every generation, so
+    the red->blue transition landed anywhere from x=0 to x=~600. In ~1/3 of
+    runs it fell left of the 405px crop window, so the 0.5s frame was already
+    blue-dominant and `assert r0 > b0` failed. It was independent of load or
+    timing (reproduced on an idle machine; 10 of 30 generated sources were
+    bad). OpenCV time-seek was ruled out (CAP_PROP_POS_MSEC frames were
+    pixel-identical to sequential decode) and so were frames at crop
+    transitions (the path is smooth; sampled frames sit mid-ramp). The
+    source is now a geq-computed ramp: identical pixels every run."""
+    out = _render_gradient(tmp_path, [
         CropKeyframe(t=float(t), cx=0.15 + (0.7 / 10.0) * t)
         for t in range(11)])
-    out = tmp_path / "out.mp4"
-    render_clip(src, out, start=0.5, end=11.0, crop=crop,
-                src_w=1280, src_h=720, fps=30.0)
-    verify_render(out, 10.5)
     r0, b0 = mean_rb(out, 0.5)
     r1, b1 = mean_rb(out, 9.5)
     assert r0 > b0, "early frame should be red-dominant (camera left)"
     assert b1 > r1, "late frame should be blue-dominant (camera right)"
+    assert camera_motion_report(out) == (True, "moved")
+
+
+def test_frozen_camera_is_reported_as_not_moved(tmp_path):
+    """Negative control: same source, constant crop path (cx=0.15 throughout).
+    The movement check must report 'did not move', proving it still catches
+    a frozen camera."""
+    out = _render_gradient(tmp_path, [
+        CropKeyframe(t=float(t), cx=0.15) for t in range(11)])
+    r1, b1 = mean_rb(out, 9.5)
+    assert r1 > b1, "frozen camera at cx=0.15 should stay red-dominant"
+    moved, reason = camera_motion_report(out)
+    assert not moved
+    assert "did not move" in reason
 
 
 def test_static_render_letterbox(tmp_path):
