@@ -22,7 +22,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 from fastapi.testclient import TestClient
@@ -486,11 +486,11 @@ def test_ffmpeg_filter_path_escapes_both_levels():
         r"'C\:/Users/diego/ws/job/clip_000.ass'"
     # apostrophe: escaped for the option level, then the quote is closed,
     # emitted as \' and reopened for the graph level
-    assert f("/tmp/a:b's/x.ass") == r"""'/tmp/a\:b\'\''s/x.ass'"""
+    assert f(PurePosixPath("/tmp/a:b's/x.ass")) == r"""'/tmp/a\:b\'\''s/x.ass'"""
     # backslashes that survive as_posix (POSIX names) are doubled
-    assert f("/tmp/we\\ird/x.ass") == r"'/tmp/we\\ird/x.ass'"
+    assert f(PurePosixPath("/tmp/we\\ird/x.ass")) == r"'/tmp/we\\ird/x.ass'"
     # plain paths just get quoted
-    assert f("/tmp/x/clip_000.ass") == "'/tmp/x/clip_000.ass'"
+    assert f(PurePosixPath("/tmp/x/clip_000.ass")) == "'/tmp/x/clip_000.ass'"
 
 
 @needs_ffmpeg
@@ -499,7 +499,8 @@ def test_real_render_in_directory_with_colon_and_apostrophe(tmp_path):
     `ass='{path}'` interpolation (the apostrophe ends the quoting)."""
     from clipforge.render.captions import CaptionCard, to_ass
 
-    d = tmp_path / "a:b's"
+    # ':' is not allowed in Windows file names, so there only the apostrophe
+    d = tmp_path / ("b's" if sys.platform == "win32" else "a:b's")
     d.mkdir()
     src = tmp_path / "src.mp4"
     subprocess.run(

@@ -156,6 +156,9 @@ def test_port_problem_localhost_name_is_checked(busy_port):
     assert "already in use" in cli.port_problem("localhost", busy_port)
 
 
-def test_port_problem_unresolvable_host_is_a_clean_message():
+def test_port_problem_unresolvable_host_is_a_clean_message(monkeypatch):
+    def fail(*a, **k):
+        raise socket.gaierror(-2, "Name or service not known")
+    monkeypatch.setattr(cli.socket, "getaddrinfo", fail)   # no real DNS lookup
     msg = cli.port_problem("no-such-host.invalid", 8000)
     assert msg.startswith("Cannot listen on no-such-host.invalid:8000")

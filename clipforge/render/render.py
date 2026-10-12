@@ -51,7 +51,8 @@ def ffmpeg_filter_path(path) -> str:
     ``'`` is special (written ``'\\''``).  Returns the quoted token, so use it
     as ``ass={ffmpeg_filter_path(p)}``.
     """
-    s = PurePath(path).as_posix()
+    # (PurePath(PureWindowsPath) re-parses as a posix path on Python < 3.12)
+    s = (path if isinstance(path, PurePath) else PurePath(path)).as_posix()
     s = s.replace("\\", "\\\\").replace("'", "\\'").replace(":", "\\:")
     return "'" + s.replace("'", "'\\''") + "'"
 
