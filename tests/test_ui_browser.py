@@ -789,6 +789,327 @@ def test_keys_while_the_pane_is_loading_write_no_review(env, seeded, fresh, page
     assert page.locator(".toast.ok").count() == 0
 
 
+# ---------------------------------------------------------------- F07: upload
+
+def _data_transfer(page, files):
+    """A DataTransfer holding real File objects, as a drag from the desktop
+    would. files: [(name, bytes, mime)]."""
+    import base64
+    payload = [{"name": n, "mime": m, "b64": base64.b64encode(b).decode()}
+               for n, b, m in files]
+    return page.evaluate_handle("""(files) => {
+        const dt = new DataTransfer();
+        for (const f of files) {
+            const bytes = Uint8Array.from(atob(f.b64), c => c.charCodeAt(0));
+            dt.items.add(new File([bytes], f.name, {type: f.mime}));
+        }
+        return dt;
+    }""", payload)
+
+
+def _drop(page, files, target="#uploadbox"):
+    dt = _data_transfer(page, files)
+    page.dispatch_event(target, "dragenter", {"dataTransfer": dt})
+    page.dispatch_event(target, "dragover", {"dataTransfer": dt})
+    page.dispatch_event(target, "drop", {"dataTransfer": dt})
+
+
+def _track_posts(page):
+    """Log every POST /api/jobs as ('start'|'end', url) in the order it happens."""
+    page.posts = []
+    page.on("request", lambda r: page.posts.append(("start", r.url))
+            if r.method == "POST" and r.url.endswith("/api/jobs") else None)
+    page.on("requestfinished", lambda r: page.posts.append(("end", r.url))
+            if r.method == "POST" and r.url.endswith("/api/jobs") else None)
+    page.on("requestfailed", lambda r: page.posts.append(("end", r.url))
+            if r.method == "POST" and r.url.endswith("/api/jobs") else None)
+
+
+def _order_xhr(page):
+    """Record, inside the page, when each XHR starts and ends (Playwright's own
+    request events can arrive after the page has already moved on)."""
+    page.add_init_script("""
+        window.__xhr = [];
+        const send = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.send = function (...a) {
+            window.__xhr.push('start');
+            // readyState 4 comes before load/loadend, i.e. before the page can react
+            this.addEventListener('readystatechange',
+                () => { if (this.readyState === 4) window.__xhr.push('end'); });
+            return send.apply(this, a);
+        };""")
+
+
+def _job_count(page) -> int:
+    return page.locator("#joblist .job").count()
+
+
+def _upload_zone_is_idle(page):
+    zone = page.locator("#uploadbox")
+    assert zone.get_attribute("aria-disabled") == "false"
+    assert "upload long-form video" in page.locator("#uploadlabel").inner_text()
+    assert page.locator("#uploadbar").is_hidden()
+    assert "dragover" not in (zone.get_attribute("class") or "")
+
+
+@pytest.fixture(scope="module")
+def small_videos(env):
+    _, _, tmp = env
+    return [_make_video(tmp / f"up{i}.mp4", 8) for i in (1, 2)]
+
+
+def test_drop_highlights_the_zone_and_uploads(env, seeded, small_videos, page):
+    server, _, _ = env
+    _track_posts(page)
+    page.goto(server.base)
+    page.wait_for_selector("#joblist .job")
+    before = _job_count(page)
+    files = [("dropped.mp4", small_videos[0].read_bytes(), "video/mp4")]
+
+    dt = _data_transfer(page, files)
+    page.dispatch_event("#sidebar", "dragenter", {"dataTransfer": dt})
+    assert "dragover" in page.locator("#uploadbox").get_attribute("class")
+    assert "dragover" in page.locator("#sidebar").get_attribute("class")
+    page.dispatch_event("#sidebar", "dragleave", {"dataTransfer": dt})
+    assert "dragover" not in page.locator("#uploadbox").get_attribute("class")
+
+    # a drag that carries no file (selected text, a link) is not an upload target
+    text = page.evaluate_handle("() => { const d = new DataTransfer(); d.setData('text/plain', 'hi'); return d; }")
+    page.dispatch_event("#sidebar", "dragenter", {"dataTransfer": text})
+    assert "dragover" not in page.locator("#uploadbox").get_attribute("class")
+
+    page.dispatch_event("#sidebar", "dragenter", {"dataTransfer": dt})
+    page.dispatch_event("#sidebar", "drop", {"dataTransfer": dt})
+    assert "dragover" not in page.locator("#uploadbox").get_attribute("class")
+    page.wait_for_function(
+        "n => document.querySelectorAll('#joblist .job').length > n", arg=before, timeout=30000)
+    assert [k for k, _ in page.posts].count("start") == 1
+    names = page.locator("#joblist .job .name").all_inner_texts()
+    assert "dropped.mp4" in names
+    page.wait_for_function(
+        "() => document.querySelector('#uploadbox').getAttribute('aria-disabled') === 'false'")
+    _upload_zone_is_idle(page)
+    server.wait_idle()
+    assert page.dialogs == []
+
+
+def test_upload_shows_a_rising_percentage_then_pipeline_progress(env, seeded, page):
+    server, _, tmp = env
+    big = tmp / "a.mp4"                         # the 30 s seeded video
+    size = big.stat().st_size
+    page.goto(server.base)
+    page.wait_for_selector("#joblist .job")
+    before = _job_count(page)
+    # slow the upload down so the percentage can be watched climbing
+    cdp = page.context.new_cdp_session(page)
+    cdp.send("Network.enable")
+    cdp.send("Network.emulateNetworkConditions", {
+        "offline": False, "latency": 0, "downloadThroughput": -1,
+        "uploadThroughput": max(size // 6, 50_000)})
+    page.evaluate("""() => {
+        window.__pcts = [];
+        const note = () => {
+            const m = /(\\d+)%/.exec(document.querySelector('#uploadlabel').textContent);
+            const bar = document.querySelector('#uploadbar');
+            window.__pcts.push({label: m ? Number(m[1]) : null,
+                                bar: bar.hidden ? null : bar.value});
+        };
+        new MutationObserver(note).observe(document.querySelector('#uploadbox'),
+            {subtree: true, childList: true, characterData: true, attributes: true});
+    }""")
+    _upload(page, "progress.mp4", big)
+    page.wait_for_function(
+        "n => document.querySelectorAll('#joblist .job').length > n", arg=before, timeout=60000)
+    cdp.send("Network.emulateNetworkConditions", {
+        "offline": False, "latency": 0, "downloadThroughput": -1, "uploadThroughput": -1})
+    pcts = [p["label"] for p in page.evaluate("window.__pcts") if p["label"] is not None]
+    bars = [p["bar"] for p in page.evaluate("window.__pcts") if p["bar"] is not None]
+    assert pcts == sorted(pcts), pcts                   # only ever rises
+    assert pcts[-1] == 100
+    assert len(set(pcts)) >= 3, f"percentage never visibly moved: {pcts}"
+    assert bars[-1] == 100 and bars == sorted(bars)
+    # ...and the new job now carries the pipeline's own progress
+    job = page.locator("#joblist .job", has=page.locator(".name", has_text="progress.mp4"))
+    assert re.search(r"ingested|transcribed|candidates_ready|refined|reframed|rendered",
+                     job.locator(".stage").inner_text())
+    page.wait_for_function(
+        "() => document.querySelector('#uploadbox').getAttribute('aria-disabled') === 'false'")
+    _upload_zone_is_idle(page)
+    server.wait_idle()
+
+
+@pytest.mark.parametrize("how", ["drop", "picker"])
+def test_non_video_files_are_refused_without_a_request(env, seeded, page, how):
+    server, _, _ = env
+    _track_posts(page)
+    page.goto(server.base)
+    page.wait_for_selector("#joblist .job")
+    before = _job_count(page)
+    files = [("notes.txt", b"hello", "text/plain"),
+             ("pic.png", b"\x89PNG\r\n\x1a\n" + b"0" * 40, "image/png")]
+    if how == "drop":
+        _drop(page, files, "#sidebar")
+    else:
+        page.set_input_files("#file", files=[
+            {"name": n, "mimeType": m, "buffer": b} for n, b, m in files])
+    msg = page.locator("#uploadmsg")
+    msg.wait_for()
+    text = msg.inner_text()
+    assert "notes.txt" in text and "pic.png" in text
+    assert text.count("not a video file") == 2
+    page.wait_for_timeout(500)
+    assert page.posts == []                                 # nothing was sent
+    assert _job_count(page) == before
+    _upload_zone_is_idle(page)
+    # the message goes away with the next attempt
+    _drop(page, [("again.txt", b"x", "text/plain")], "#sidebar")
+    assert "notes.txt" not in msg.inner_text() and "again.txt" in msg.inner_text()
+    assert page.dialogs == []
+
+
+def test_extension_check_is_case_insensitive_and_needs_a_dot(env, seeded, small_videos, page):
+    server, _, _ = env
+    _track_posts(page)
+    page.goto(server.base)
+    page.wait_for_selector("#joblist .job")
+    _drop(page, [("mp4", b"x", "video/mp4"), ("clip.mp4.txt", b"x", "video/mp4")], "#sidebar")
+    page.locator("#uploadmsg .err").nth(1).wait_for()
+    assert page.posts == []
+    _drop(page, [("LOUD.MP4", small_videos[0].read_bytes(), "video/mp4")], "#sidebar")
+    page.wait_for_selector("#joblist .job .name:text-is('LOUD.MP4')", timeout=30000)
+    server.wait_idle()
+
+
+def test_server_rejection_is_shown_inline_and_the_zone_recovers(env, seeded, page):
+    import httpx
+    server, _, _ = env
+    expected = httpx.post(server.base + "/api/jobs", timeout=30, files={
+        "file": ("junk.mp4", b"this is plain text", "video/mp4")})
+    assert expected.status_code == 400
+    detail = expected.json()["detail"]
+    # an exact message, answered by a stub, to check it is shown verbatim
+    page.route("**/api/jobs", lambda route: route.fulfill(
+        status=400, content_type="application/json",
+        body=json.dumps({"detail": "Exactly <b>this</b> text"}))
+        if route.request.method == "POST" else route.continue_())
+
+    page.goto(server.base)
+    page.wait_for_selector("#joblist .job")
+    before = _job_count(page)
+    page.set_input_files("#file", files=[
+        {"name": "stub.mp4", "mimeType": "video/mp4", "buffer": b"x"}])
+    stub = page.locator("#uploadmsg .err")
+    stub.wait_for(timeout=15000)
+    assert stub.inner_text() == "stub.mp4: Exactly <b>this</b> text"
+    assert page.evaluate("document.querySelectorAll('#uploadmsg b').length") == 0
+    _upload_zone_is_idle(page)
+    page.unroute("**/api/jobs")
+    page.set_input_files("#file", files=[
+        {"name": "junk.mp4", "mimeType": "video/mp4", "buffer": b"this is plain text"}])
+    msg = page.locator("#uploadmsg .err")
+    msg.wait_for(timeout=15000)
+    shown = msg.inner_text()
+    assert shown.startswith("junk.mp4: ")
+    # the server's own 400 text, which names no path, job id or ffprobe output
+    assert shown == "junk.mp4: " + detail
+    assert "ffprobe" not in shown and "/" not in shown and "moov" not in shown
+    page.wait_for_function(
+        "() => document.querySelector('#uploadbox').getAttribute('aria-disabled') === 'false'")
+    _upload_zone_is_idle(page)
+    assert _job_count(page) == before
+    # the zone still works: a good file after the bad one goes through
+    assert page.dialogs == []
+
+
+def test_several_files_upload_one_after_the_other(env, seeded, small_videos, page):
+    server, _, _ = env
+    _order_xhr(page)
+    page.goto(server.base)
+    page.wait_for_selector("#joblist .job")
+    before = _job_count(page)
+    _drop(page, [("multi-one.mp4", small_videos[0].read_bytes(), "video/mp4"),
+                 ("skip-me.txt", b"nope", "text/plain"),
+                 ("multi-two.mp4", small_videos[1].read_bytes(), "video/mp4")], "#sidebar")
+    page.wait_for_function(
+        "n => document.querySelectorAll('#joblist .job').length >= n + 2", arg=before, timeout=60000)
+    names = page.locator("#joblist .job .name").all_inner_texts()
+    assert "multi-one.mp4" in names and "multi-two.mp4" in names
+    # strictly sequential: the second request starts only after the first has ended
+    assert page.evaluate("window.__xhr") == ["start", "end", "start", "end"]
+    assert "skip-me.txt: not a video file" in page.locator("#uploadmsg").inner_text()
+    page.wait_for_function(
+        "() => document.querySelector('#uploadbox').getAttribute('aria-disabled') === 'false'")
+    _upload_zone_is_idle(page)
+    server.wait_idle()
+
+
+def test_a_drop_during_an_upload_is_queued(env, seeded, small_videos, page):
+    server, _, _ = env
+    _order_xhr(page)
+    page.goto(server.base)
+    page.wait_for_selector("#joblist .job")
+    before = _job_count(page)
+    cdp = page.context.new_cdp_session(page)
+    cdp.send("Network.enable")
+    cdp.send("Network.emulateNetworkConditions", {
+        "offline": False, "latency": 0, "downloadThroughput": -1,
+        "uploadThroughput": 300_000})
+    _drop(page, [("queue-one.mp4", small_videos[0].read_bytes(), "video/mp4")], "#sidebar")
+    page.wait_for_function("() => document.querySelector('#uploadbox').getAttribute('aria-disabled') === 'true'")
+    _drop(page, [("queue-two.mp4", small_videos[1].read_bytes(), "video/mp4")], "#sidebar")
+    cdp.send("Network.emulateNetworkConditions", {
+        "offline": False, "latency": 0, "downloadThroughput": -1, "uploadThroughput": -1})
+    page.wait_for_function(
+        "n => document.querySelectorAll('#joblist .job').length >= n + 2", arg=before, timeout=60000)
+    assert page.evaluate("window.__xhr") == ["start", "end", "start", "end"]
+    server.wait_idle()
+
+
+def test_phone_layout_at_390px(env, seeded, fresh, page):
+    server, jid, _ = fresh
+    _, _, tmp = env
+    page.set_viewport_size({"width": 390, "height": 844})
+    _serve_webm_for_clips(page, tmp)
+    page.goto(server.base)
+    _open_first_job(page, "f06-multi.mp4")
+    page.wait_for_selector(".clip.sel")
+
+    width = lambda: page.evaluate("document.documentElement.scrollWidth")  # noqa: E731
+    assert width() <= 390
+    side = page.locator("#sidebar").bounding_box()
+    detail = page.locator("#detail").bounding_box()
+    # stacked, not side by side
+    assert side["y"] + side["height"] <= detail["y"] + 1
+    assert side["width"] >= 340 and detail["width"] >= 340
+    assert page.locator("#uploadbox").is_visible()
+    assert page.evaluate("""() => { const d = document.querySelector('#detail');
+                                     return d.scrollWidth <= d.clientWidth; }""")
+
+    card = page.locator(".clip:not([hidden])").first
+    box = card.bounding_box()
+    assert box["x"] >= 0 and box["x"] + box["width"] <= 390
+    for sel in (".approve", ".reject"):
+        btn = card.locator(sel)
+        btn.scroll_into_view_if_needed()
+        b = btn.bounding_box()
+        assert btn.is_visible() and b["width"] > 40
+        assert b["x"] >= 0 and b["x"] + b["width"] <= 390, (sel, b)
+        assert b["y"] >= 0 and b["y"] + b["height"] <= 844
+    # nothing scrolled sideways while we looked
+    assert width() <= 390
+    assert page.evaluate("document.querySelector('#detail').scrollLeft") == 0
+    # and the buttons work from here
+    card.locator(".approve").click()
+    page.locator(".toast.ok", has_text="saved").wait_for(timeout=3000)
+    assert _decisions(server, jid)[int(card.get_attribute("data-clip"))] == "approved"
+    # the filter bar and the trim row fit too
+    for sel in ("button[data-filter]", ".clip:not([hidden]) .trim input"):
+        for el in page.locator(sel).all()[:8]:
+            b = el.bounding_box()
+            assert b["x"] >= 0 and b["x"] + b["width"] <= 390, (sel, b)
+    page.set_viewport_size({"width": 1280, "height": 900})
+
+
 def test_inline_toasts_and_no_dialogs(env, seeded, page):
     server, _, _ = env
     page.goto(server.base)

@@ -12,7 +12,9 @@ Design notes for later scaling (deliberately NOT built yet):
 """
 from __future__ import annotations
 
+import math
 import shutil
+import sys
 import threading
 import traceback
 import uuid
@@ -31,13 +33,15 @@ from clipforge.ingest.ingest import SUPPORTED_EXTENSIONS, IngestError, ingest
 from clipforge.pipeline import PipelineConfig, run_pipeline
 from clipforge.refine.refine import RefinedSet
 from clipforge.review.store import (
-    Review, export_examples, job_metrics, load_reviews, save_reviews,
+    Review, export_examples, job_metrics, load_reviews, upsert_review,
     workspace_metrics,
 )
 
 STATIC = Path(__file__).parent / "static"
 
 MAX_STEM_CHARS = 100
+UNREADABLE_VIDEO = ("Could not read this file as a video. Check that it is a "
+                    "complete video with an audio track.")
 
 
 def _clean_filename(raw: str | None) -> str:
@@ -103,14 +107,51 @@ def create_app(workspace: Path, config: PipelineConfig | None = None,
             threading.Thread(target=run_bg, args=(jid,), daemon=True).start()
         return True
 
+    def _check_clip_exists(d: Path, cid: int) -> None:
+        """404 for a clip id the job does not have (once clips exist)."""
+        m = Manifest.load(d)
+        if m.refined_path and (d / m.refined_path).exists() and \
+                all(c.id != cid for c in RefinedSet.load(d / m.refined_path).clips):
+            raise HTTPException(404, "unknown clip")
+
+    def _check_trim(d: Path, cid: int, body: ReviewIn) -> None:
+        """400 unless the trim lies inside the source and start < end."""
+        a, b = body.adjusted_start, body.adjusted_end
+        if a is None and b is None:
+            return
+        m = Manifest.load(d)
+        dur = m.source.duration_sec if m.source else None
+        for name, v in (("start", a), ("end", b)):
+            if v is None:
+                continue
+            # written so that NaN fails too
+            if not (math.isfinite(v) and v >= 0 and (dur is None or v <= dur)):
+                lim = f"0 and {dur:g} s" if dur is not None else "0 and the source length"
+                raise HTTPException(
+                    400, f"trim {name} must be between {lim}")
+        # a one-sided trim is compared with the clip's own other boundary
+        start, end = a, b
+        if (a is None or b is None) and m.refined_path \
+                and (d / m.refined_path).exists():
+            clip = next((c for c in RefinedSet.load(d / m.refined_path).clips
+                         if c.id == cid), None)
+            if clip is not None:
+                start = clip.start if a is None else a
+                end = clip.end if b is None else b
+        if start is not None and end is not None and start >= end:
+            raise HTTPException(400, "trim start must be before trim end")
+
     # -------------------------------------------------------------- routes
 
     @app.get("/", response_class=HTMLResponse)
     def index():
         return (STATIC / "index.html").read_text()
 
+    # A plain `def` on purpose: FastAPI runs it in a worker thread, so the
+    # blocking copy + ffmpeg ingest never stalls the event loop (and with it
+    # every other request).
     @app.post("/api/jobs")
-    async def create_job(file: UploadFile):
+    def create_job(file: UploadFile):
         name = _clean_filename(file.filename)
         ext = Path(name).suffix.lower()
         if ext not in SUPPORTED_EXTENSIONS:
@@ -134,7 +175,10 @@ def create_app(workspace: Path, config: PipelineConfig | None = None,
                 m = ingest(tmp, workspace, job_id=jid)
             except IngestError as e:
                 shutil.rmtree(workspace / jid, ignore_errors=True)
-                raise HTTPException(400, str(e))
+                # the full text can hold paths and raw ffprobe output: log it
+                # here, tell the user only the fixed sentence
+                print(f"ingest rejected {name!r}: {e}", file=sys.stderr)
+                raise HTTPException(400, UNREADABLE_VIDEO)
             except Exception:  # noqa: BLE001 — don't leak internals
                 shutil.rmtree(workspace / jid, ignore_errors=True)
                 traceback.print_exc()
@@ -225,11 +269,11 @@ def create_app(workspace: Path, config: PipelineConfig | None = None,
         if body.decision not in ("approved", "rejected"):
             raise HTTPException(400, "decision must be approved|rejected")
         d = job_dir(jid)
-        rs = load_reviews(d)
-        rs.upsert(Review(clip_id=cid, decision=body.decision,
-                         adjusted_start=body.adjusted_start,
-                         adjusted_end=body.adjusted_end, note=body.note))
-        save_reviews(d, rs)
+        _check_clip_exists(d, cid)
+        _check_trim(d, cid, body)
+        upsert_review(d, Review(clip_id=cid, decision=body.decision,
+                                adjusted_start=body.adjusted_start,
+                                adjusted_end=body.adjusted_end, note=body.note))
         return {"ok": True, "metrics": job_metrics(d)}
 
     @app.post("/api/jobs/{jid}/export-examples")
@@ -248,6 +292,6 @@ def create_app(workspace: Path, config: PipelineConfig | None = None,
     @app.exception_handler(Exception)
     async def unhandled(request, exc):
         traceback.print_exc()
-        return JSONResponse(status_code=500, content={"detail": str(exc)})
+        return JSONResponse(status_code=500, content={"detail": "Internal error"})
 
     return app
