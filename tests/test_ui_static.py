@@ -53,3 +53,19 @@ def test_no_html_string_injection():
     for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML",
                  "document.write"):
         assert sink not in src, sink
+
+
+def test_no_other_markup_or_handler_injection_routes():
+    src = _source()
+    # event handlers set through the DOM API with a literal attribute name
+    assert not re.search(r"""setAttribute(NS)?\(\s*["'`](\w+:)?on""", src, re.I)
+    for api in ("createContextualFragment", "DOMParser", "srcdoc",
+                "eval(", "new Function("):
+        assert api not in src, api
+
+
+def test_polling_is_not_a_fixed_interval():
+    # polling is a timer re-armed by refresh() only while a job is running;
+    # a setInterval would poll forever
+    assert not re.search(r"(?<![\w.])setInterval\s*\(", _source())
+    assert not re.search(r"window\.setInterval\s*\(", _source())

@@ -3,9 +3,10 @@ Browser-level checks of the review page (F05), driven by Playwright.
 
 Starts the real server (mock engines, temp workspace) in a subprocess and
 drives headless Chromium against it. Skipped when playwright or its
-browser is not installed. These tests take about a minute because they
-watch real time (video playback, idle polling) and take about 2.5 minutes,
-so they only run when asked:
+browser is not installed (`pip install -r requirements-dev.txt` and
+`playwright install chromium`). The tests watch real time (video playback,
+idle polling), so the whole file takes about 3.5 minutes and only runs when
+asked:
 
     CLIPFORGE_BROWSER_TESTS=1 python -m pytest tests/test_ui_browser.py -q
 """
@@ -234,6 +235,71 @@ def test_background_upload_and_idle_polling(env, seeded, page):
     page.wait_for_timeout(10000)
     assert page.api_calls == []
     assert page.dialogs == []
+
+
+def test_switching_jobs_never_acts_on_the_wrong_job(env, seeded, page):
+    import httpx
+    server, _, tmp = env
+    b = httpx.post(server.base + "/api/jobs", timeout=60, files={
+        "file": ("switch-b.mp4", (tmp / "a.mp4").read_bytes(), "video/mp4")})
+    assert b.status_code == 200, b.text
+    b_id = b.json()["job_id"]
+    server.wait_idle()
+    b_clips = _get(server.base, f"/api/jobs/{b_id}")["clips"]
+    assert b_clips and all(c["review"] is None for c in b_clips)
+
+    page.goto(server.base)
+    _open_first_job(page, EVIL_NAME)
+    a_id = page.locator(".clip").first.get_attribute("data-job")
+    assert a_id and a_id != b_id
+
+    # click job B and, in the same tick, try to approve a card of job A
+    clicked = page.evaluate("""(bName) => {
+        const job = [...document.querySelectorAll('#joblist .job')]
+          .find(j => j.querySelector('.name').textContent === bName);
+        job.click();
+        const btn = document.querySelector('.clip .approve');
+        if (btn) btn.click();
+        return !!btn;
+    }""", "switch-b.mp4")
+    assert clicked is False, "job A's cards must not stay clickable"
+
+    page.wait_for_selector(f'.clip[data-job="{b_id}"]')
+    assert page.locator(f'.clip:not([data-job="{b_id}"])').count() == 0
+    page.wait_for_timeout(500)
+    b_clips = _get(server.base, f"/api/jobs/{b_id}")["clips"]
+    assert all(c["review"] is None for c in b_clips)
+    assert page.dialogs == []
+
+
+def test_recovers_from_a_failed_first_load(env, seeded, page):
+    server, _, _ = env
+    failures = []
+
+    def flaky(route):
+        if not failures:
+            failures.append(route.request.url)
+            route.abort()
+        else:
+            route.continue_()
+
+    page.route("**/api/jobs", flaky)
+    page.goto(server.base)
+    page.locator(".toast.err").wait_for(timeout=3000)
+    # nothing was running, so there is no polling, yet one retry fixes the list
+    page.wait_for_selector("#joblist .job", timeout=8000)
+
+
+def test_dirty_field_is_released_on_blur(env, seeded, page):
+    server, _, _ = env
+    page.goto(server.base)
+    _open_first_job(page, EVIL_NAME)
+    note = page.locator('.clip [data-field="note"]').first
+    server_value = note.input_value()
+    note.fill("scratch")
+    note.fill(server_value)
+    page.locator("#detail .stagebar").click()      # blur
+    assert note.evaluate("n => n.dataset.dirty") is None
 
 
 def test_inline_toasts_and_no_dialogs(env, seeded, page):

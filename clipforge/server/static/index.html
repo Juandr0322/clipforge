@@ -130,6 +130,7 @@ function h(tag, attrs, ...kids) {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
     if (v === null || v === undefined || v === false) continue;
+    if (/^on/i.test(k)) throw new Error("event handler attributes are not allowed: " + k);
     if (k === "class") e.className = v;
     else if (k === "text") e.textContent = v;
     else e.setAttribute(k, v);
@@ -199,34 +200,59 @@ $("#file").addEventListener("change", async e => {
 // Polling runs only while some job reports running:true. refresh() decides
 // after every pass whether to schedule the next one.
 let pollTimer = null, refreshing = false, refreshAgain = false;
-let offline = false, wasPolling = false;
+let wasPolling = false;      // the last successful job list had a running job
+let retriedAfterFail = false, lastRefreshAt = 0;
+const RETRY_MS = 3000;
 
 async function refresh() {
   if (refreshing) { refreshAgain = true; return; }
   refreshing = true;
   clearTimeout(pollTimer); pollTimer = null;
-  let keepPolling = false;
+  let delay = null;            // ms until the next automatic refresh, if any
+  let failure = null;
+  let jobs = null;
   try {
-    const jobs = await api("/api/jobs");
-    keepPolling = jobs.some(j => j.running);
-    renderJobs(jobs);
-    const gm = await api("/api/metrics");
-    $("#globalmetrics").textContent = gm.total_reviewed
-      ? `approval ${(gm.overall_approval_rate*100).toFixed(0)}% · avg trim ${gm.avg_trim_adjustment_sec}s · ${gm.total_reviewed} reviewed`
-      : "";
-    if (currentJob) await renderDetail(currentJob);
-    offline = false;
-  } catch (err) {
-    // keep retrying only if we were polling a running job; say so once
-    keepPolling = keepPolling || wasPolling;
-    if (!offline) toast(errText(err), "err");
-    offline = true;
+    jobs = await api("/api/jobs");
+  } catch (err) { failure = err; }
+
+  if (jobs) {
+    retriedAfterFail = false;
+    wasPolling = jobs.some(j => j.running);
+    if (wasPolling) delay = POLL_MS;
+    try {
+      renderJobs(jobs);
+      const gm = await api("/api/metrics");
+      $("#globalmetrics").textContent = gm.total_reviewed
+        ? `approval ${(gm.overall_approval_rate*100).toFixed(0)}% · avg trim ${gm.avg_trim_adjustment_sec}s · ${gm.total_reviewed} reviewed`
+        : "";
+      if (currentJob) await renderDetail(currentJob);
+    } catch (err) { failure = err; }   // polling decision above stays valid
+  } else if (wasPolling) {
+    delay = POLL_MS;                   // we were watching a running job: keep trying
+  } else if (!retriedAfterFail) {
+    retriedAfterFail = true;           // job list unknown: one retry, then focus/visibility
+    delay = RETRY_MS;
   }
-  wasPolling = keepPolling;
+
+  if (failure) {
+    if (!offline) toast(errText(failure), "err");
+    offline = true;
+  } else offline = false;
+  lastRefreshAt = Date.now();
   refreshing = false;
-  if (keepPolling) pollTimer = setTimeout(refresh, POLL_MS);
+  if (delay !== null) pollTimer = setTimeout(refresh, delay);
   if (refreshAgain) { refreshAgain = false; refresh(); }
 }
+let offline = false;
+
+// Coming back to the tab (or the window) is a cheap moment to re-check, and
+// recovers from a refresh that failed while nothing was being polled.
+function refreshIfStale() {
+  if (document.visibilityState === "visible" && !refreshing &&
+      Date.now() - lastRefreshAt > 1000) refresh();
+}
+document.addEventListener("visibilitychange", refreshIfStale);
+window.addEventListener("focus", refreshIfStale);
 
 // ---------- job list (updated in place) ----------
 const jobEls = new Map();    // job_id -> {el, name, stage}
@@ -250,9 +276,10 @@ function renderJobs(jobs) {
     e.el.classList.toggle("active", j.job_id === currentJob);
     e.name.textContent = j.filename;
     e.name.title = j.filename;
-    e.stage.classList.toggle("failed", !!j.failed);
+    const failed = j.failed && !j.running;      // a retry in progress is not "failed"
+    e.stage.classList.toggle("failed", failed);
     e.stage.textContent =
-      (j.failed ? "FAILED" : j.stage) +
+      (failed ? "FAILED" : j.stage) +
       (j.progress && j.stage !== "rendered" ? " · " + j.progress : "") +
       " · " + Math.round(j.duration) + "s";
     const want = prev ? prev.nextSibling : list.firstChild;
@@ -265,6 +292,11 @@ function renderJobs(jobs) {
 function openJob(id) {
   if (!id || id === currentJob) return;
   currentJob = id;
+  // Drop the previous job's pane right now: until the new job's detail has
+  // loaded nothing on screen may be clickable against the wrong job.
+  D = null; cards.clear();
+  $("#detail").replaceChildren(h("div", {class: "empty", text: "loading…"}));
+  for (const [jid, e] of jobEls) e.el.classList.toggle("active", jid === id);
   refresh();
 }
 $("#joblist").addEventListener("click", e => {
@@ -285,10 +317,10 @@ function buildSkeleton(jobId) {
   const stagebar = h("div", {class: "stagebar"}, ...STAGES.map(s => h("span", {text: s})));
   const status = h("div", {class: "err", hidden: ""});
   const statusText = h("span");
-  const retry = h("button", {type: "button", "data-act": "rerun", text: "retry pipeline"});
+  const retry = h("button", {type: "button", "data-act": "rerun", "data-job": jobId, text: "retry pipeline"});
   status.append(statusText, retry);
   const exportText = h("span");
-  const exportBtn = h("button", {type: "button", "data-act": "export",
+  const exportBtn = h("button", {type: "button", "data-act": "export", "data-job": jobId,
                                  text: "export approved → few-shot examples"});
   const exportbar = h("div", {id: "exportbar", hidden: ""}, exportText, exportBtn);
   const grid = h("div", {class: "clipgrid", hidden: ""});
@@ -303,18 +335,19 @@ async function renderDetail(jobId) {
   if (jobId !== currentJob) return;       // user switched jobs while we waited
   if (!D || D.jobId !== jobId) buildSkeleton(jobId);
 
+  // a rerun leaves the old error in the manifest while it runs: show progress, not the error
+  const failed = j.failed && !j.running;
   const doneIdx = STAGES.indexOf(j.stage);
   [...D.stagebar.children].forEach((span, i) => {
-    span.className = i <= doneIdx ? "done" : (i === doneIdx + 1 && !j.failed ? "now" : "");
+    span.className = i <= doneIdx ? "done" : (i === doneIdx + 1 && !failed ? "now" : "");
   });
 
-  if (j.failed) {
+  if (failed) {
     D.status.hidden = false;
     D.status.className = "err";
     D.statusText.textContent = "stage failed: " + (j.error || "unknown error");
     D.retry.hidden = false;
-    D.retry.disabled = !!j.running;
-  } else if (j.stage !== "rendered") {
+  } else if (j.running || j.stage !== "rendered") {
     D.status.hidden = false;
     D.status.className = "err warn";
     D.statusText.textContent = j.progress || "working…";
@@ -342,7 +375,7 @@ function syncClips(j) {
   for (const c of j.clips) {
     seen.add(c.id);
     let card = cards.get(c.id);
-    if (!card) { card = buildCard(c.id); cards.set(c.id, card); }
+    if (!card) { card = buildCard(c.id, j.job_id); cards.set(c.id, card); }
     updateCard(card, c, j.job_id);
     const want = prev ? prev.nextSibling : D.grid.firstChild;
     if (want !== card.el) D.grid.insertBefore(card.el, want);   // no-op when order is unchanged
@@ -351,7 +384,7 @@ function syncClips(j) {
   for (const [id, card] of cards) if (!seen.has(id)) { card.el.remove(); cards.delete(id); }
 }
 
-function buildCard(id) {
+function buildCard(id, jobId) {
   const field = (name, ph, cls) =>
     h("input", {placeholder: ph, class: cls, "data-field": name, autocomplete: "off"});
   const slot = h("div", {class: "vslot"});
@@ -365,17 +398,18 @@ function buildCard(id) {
   const ts = field("start", "start"), te = field("end", "end"), tn = field("note", "note", "note");
   const approve = h("button", {type: "button", class: "approve", "data-act": "approved", text: "✓ approve"});
   const reject = h("button", {type: "button", class: "reject", "data-act": "rejected", text: "✗ reject"});
-  const el = h("div", {class: "clip", "data-clip": id},
+  const el = h("div", {class: "clip", "data-clip": id, "data-job": jobId},
     slot, hook, meta,
     h("div", {class: "trim"}, "trim: ", ts, te, tn),
     h("div", {class: "btnrow"}, approve, reject));
-  return {id, el, slot, video: null, hook, score, info, reason, qa, qaWrap, ts, te, tn, approve, reject};
+  return {id, jobId, el, slot, video: null, hook, score, info, reason, qa, qaWrap, ts, te, tn, approve, reject};
 }
 
 // Fill a field from the server unless the reviewer is editing it.
 function setField(input, value) {
-  if (input.dataset.dirty === "1" || document.activeElement === input) return;
   const v = value === null || value === undefined ? "" : String(value);
+  input.dataset.server = v;                       // last value the server reported
+  if (input.dataset.dirty === "1" || document.activeElement === input) return;
   if (input.value !== v) input.value = v;
 }
 
@@ -408,24 +442,29 @@ function updateCard(card, c, jobId) {
 $("#detail").addEventListener("input", e => {
   if (e.target.dataset && e.target.dataset.field) e.target.dataset.dirty = "1";
 });
+// ...but once the reviewer leaves a field holding what the server has, it is clean again
+$("#detail").addEventListener("focusout", e => {
+  const t = e.target;
+  if (t.dataset && t.dataset.dirty === "1" && t.value === t.dataset.server) delete t.dataset.dirty;
+});
 
 $("#detail").addEventListener("click", e => {
   const btn = e.target.closest("button[data-act]");
   if (!btn || btn.disabled) return;
   const act = btn.dataset.act;
-  if (act === "rerun") rerun();
-  else if (act === "export") exportExamples();
+  // every action targets the job its own element was built for, never "whatever is open now"
+  if (act === "rerun") rerun(btn.dataset.job);
+  else if (act === "export") exportExamples(btn.dataset.job);
   else {
     const el = btn.closest(".clip");
-    if (el) review(Number(el.dataset.clip), act);
+    if (el) review(el.dataset.job, Number(el.dataset.clip), act);
   }
 });
 
 // ---------- actions ----------
-async function review(cid, decision) {
+async function review(jobId, cid, decision) {
   const card = cards.get(cid);
-  const jobId = currentJob;
-  if (!card || card.saving) return;
+  if (!card || card.jobId !== jobId || card.saving) return;
   const num = input => {
     const v = input.value.trim();
     return v === "" ? null : Number(v);
@@ -444,7 +483,9 @@ async function review(cid, decision) {
       body: JSON.stringify({decision, adjusted_start: start, adjusted_end: end, note: sent.tn})
     });
     // fields now match the server, unless the reviewer kept typing meanwhile
-    for (const k of ["ts", "te", "tn"]) if (card[k].value === sent[k]) delete card[k].dataset.dirty;
+    for (const k of ["ts", "te", "tn"]) {
+      if (card[k].value === sent[k]) { delete card[k].dataset.dirty; card[k].dataset.server = sent[k]; }
+    }
     toast(`clip ${cid + 1} ${decision} · saved`, "ok");
     refresh();
   } catch (err) {
@@ -454,17 +495,17 @@ async function review(cid, decision) {
   card.approve.disabled = card.reject.disabled = false;
 }
 
-async function rerun() {
+async function rerun(jobId) {
   try {
-    await api(`/api/jobs/${encodeURIComponent(currentJob)}/rerun`, {method: "POST"});
+    await api(`/api/jobs/${encodeURIComponent(jobId)}/rerun`, {method: "POST"});
     toast("pipeline restarted", "info");
   } catch (err) { toast("retry failed: " + errText(err), "err"); }
   refresh();
 }
 
-async function exportExamples() {
+async function exportExamples(jobId) {
   try {
-    const r = await api(`/api/jobs/${encodeURIComponent(currentJob)}/export-examples`, {method: "POST"});
+    const r = await api(`/api/jobs/${encodeURIComponent(jobId)}/export-examples`, {method: "POST"});
     toast(`wrote ${r.written.length} example file(s) to ${r.examples_dir}`, "ok");
   } catch (err) { toast("export failed: " + errText(err), "err"); }
 }
