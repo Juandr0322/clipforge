@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from clipforge import settings
 from clipforge.settings import load_env
 
@@ -40,23 +42,36 @@ def test_missing_env_is_not_an_error(tmp_path):
 
 def test_default_location_is_repo_root_regardless_of_cwd(tmp_path, monkeypatch):
     assert settings.DEFAULT_ENV_PATH == ROOT / ".env"
-    seen = {}
-    monkeypatch.setattr(
-        settings, "load_dotenv",
-        lambda p, override: seen.update(p=Path(p), o=override) or True)
-    monkeypatch.setattr(Path, "is_file", lambda self: True)
-    monkeypatch.chdir(tmp_path)
-    load_env()
-    assert seen["p"] == ROOT / ".env"
-    assert seen["o"] is False
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    fake_root = tmp_path / "root"
+    fake_root.mkdir()
+    (fake_root / ".env").write_text("CLIPFORGE_DETECTOR=haar\n")
+    monkeypatch.setattr(settings, "DEFAULT_ENV_PATH", fake_root / ".env")
+    monkeypatch.setenv("CLIPFORGE_DETECTOR", "x")
+    monkeypatch.delenv("CLIPFORGE_DETECTOR")
+    monkeypatch.chdir(elsewhere)
+    assert load_env() is True
+    assert os.environ["CLIPFORGE_DETECTOR"] == "haar"
+
+
+def test_empty_env_file_counts_as_loaded(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("")
+    assert load_env(env) is True
 
 
 def test_importing_library_does_not_read_dotenv():
     code = (
+        "import os, sys\n"
+        "before = dict(os.environ)\n"
         "import dotenv\n"
         "def boom(*a, **k): raise SystemExit('dotenv was called')\n"
         "dotenv.load_dotenv = boom\n"
+        "dotenv.main.load_dotenv = boom\n"
         "import clipforge.pipeline, clipforge.server.app\n"
+        "assert dict(os.environ) == before, 'environment changed on import'\n"
+        "assert 'clipforge.settings' not in sys.modules\n"
         "print('ok')\n"
     )
     r = subprocess.run([sys.executable, "-c", code], cwd=ROOT,
@@ -65,25 +80,36 @@ def test_importing_library_does_not_read_dotenv():
     assert r.stdout.strip() == "ok"
 
 
-def test_cli_main_loads_env(monkeypatch):
+def test_cli_main_loads_env_before_running_subcommand(tmp_path, monkeypatch):
     from clipforge import cli
-    called = []
-    monkeypatch.setattr(cli, "load_env", lambda *a, **k: called.append(1))
-    monkeypatch.setattr(sys, "argv", ["clipforge", "status", "nojob"])
-    try:
+
+    class Stop(Exception):
+        pass
+
+    calls = []
+    monkeypatch.setattr(cli, "load_env", lambda *a, **k: calls.append("load_env"))
+
+    def fake_manifest_load(job_dir):
+        calls.append("subcommand")
+        raise Stop
+
+    monkeypatch.setattr(cli.Manifest, "load", fake_manifest_load)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["clipforge", "status", "nojob", "--workspace", str(tmp_path)])
+    with pytest.raises(Stop):
         cli.main()
-    except Exception:
-        pass  # the job does not exist; only the load order matters
-    assert called == [1]
+    assert calls == ["load_env", "subcommand"]
 
 
 def test_env_example_lists_every_clipforge_var():
+    pattern = r"CLIPFORGE_[A-Z0-9_]+"
     names = set()
     for py in (ROOT / "clipforge").rglob("*.py"):
-        names |= set(re.findall(r"CLIPFORGE_[A-Z0-9_]+", py.read_text()))
-    example = (ROOT / ".env.example").read_text()
-    missing = {n for n in names if n not in example}
-    assert names and not missing, f"missing from .env.example: {missing}"
+        names |= set(re.findall(pattern, py.read_text()))
+    listed = set(re.findall(pattern, (ROOT / ".env.example").read_text()))
+    assert names, "no CLIPFORGE_* names found in source"
+    assert names <= listed, f"missing from .env.example: {names - listed}"
 
 
 def test_python_dotenv_in_requirements():

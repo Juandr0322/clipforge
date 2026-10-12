@@ -16,9 +16,11 @@ def load_env(path: Path | str | None = None) -> bool:
     """Load ``KEY=value`` pairs from a .env file into ``os.environ``.
 
     Real environment variables always win (``override=False``). A missing file
-    is not an error. Returns True if a file was found and read.
+    is not an error. Returns True if the file existed and was read (even if it
+    was empty), False if there was no file.
     """
     env_path = Path(path) if path is not None else DEFAULT_ENV_PATH
     if not env_path.is_file():
         return False
-    return load_dotenv(env_path, override=False)
+    load_dotenv(env_path, override=False)
+    return True
