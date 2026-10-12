@@ -14,7 +14,7 @@
   body {
     background:var(--bg); color:var(--text);
     font-family:"JetBrains Mono","SF Mono",Menlo,Consolas,monospace;
-    font-size:14px; height:100vh; display:flex; flex-direction:column;
+    font-size:14px; height:100vh; height:100dvh; display:flex; flex-direction:column;
   }
   header {
     padding:14px 20px; border-bottom:1px solid var(--line);
@@ -31,7 +31,13 @@
     border:1px dashed var(--line); border-radius:8px; padding:14px;
     text-align:center; color:var(--dim); cursor:pointer;
   }
-  .upload:hover { border-color:var(--accent); color:var(--accent); }
+  .upload:hover, .upload.dragover { border-color:var(--accent); color:var(--accent); }
+  .upload.dragover { background:var(--panel2); border-style:solid; }
+  #sidebar.dragover { outline:2px dashed var(--accent); outline-offset:-4px; }
+  .upload progress { display:block; width:100%; height:6px; margin-top:8px; accent-color:var(--accent); }
+  #uploadmsg:empty { display:none; }
+  #uploadmsg { display:flex; flex-direction:column; gap:4px; }
+  #uploadmsg .err { margin:0; overflow-wrap:anywhere; }
   .job {
     background:var(--panel); border:1px solid var(--line); border-radius:8px;
     padding:10px 12px; cursor:pointer;
@@ -48,7 +54,7 @@
   }
   .stagebar span.done { color:var(--good); border-color:var(--good); }
   .stagebar span.now  { color:var(--warn); border-color:var(--warn); }
-  .clipgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(340px,1fr)); gap:16px; }
+  .clipgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(340px,100%),1fr)); gap:16px; }
   .clip {
     background:var(--panel); border:1px solid var(--line); border-radius:10px;
     padding:14px; display:flex; flex-direction:column; gap:10px;
@@ -120,6 +126,23 @@
   #help dt { color:var(--accent); font-weight:bold; white-space:nowrap; }
   #help dd { margin:0; color:var(--text); }
   #help p { color:var(--dim); margin:10px 0; line-height:1.5; }
+  /* phone: the job list sits above the clip detail instead of beside it */
+  @media (max-width:700px) {
+    header { flex-wrap:wrap; padding:10px 16px; gap:8px 12px; }
+    header .metrics { margin-left:0; flex-basis:100%; order:3; }
+    main { flex-direction:column; }
+    #sidebar {
+      width:auto; max-height:34%; flex:none; border-right:0;
+      border-bottom:1px solid var(--line);
+    }
+    #detail { padding:14px 16px; min-width:0; }
+    .clip { padding:12px; min-width:0; }
+    .clip video { max-height:300px; }
+    .btnrow button { flex:1; padding:12px 14px; }
+    .trim input { width:64px; }
+    .trim .note { min-width:0; flex-basis:100%; }
+    #help { top:auto; bottom:12px; right:12px; max-height:70vh; overflow-y:auto; }
+  }
 </style>
 </head>
 <body>
@@ -131,8 +154,12 @@
 </header>
 <main>
   <div id="sidebar">
-    <div class="upload" id="uploadbox" role="button" tabindex="0">+ upload long-form video</div>
-    <input type="file" id="file" accept="video/*">
+    <div class="upload" id="uploadbox" role="button" tabindex="0">
+      <span id="uploadlabel"></span>
+      <progress id="uploadbar" max="100" value="0" hidden></progress>
+    </div>
+    <div id="uploadmsg" aria-live="polite"></div>
+    <input type="file" id="file" multiple>
     <div id="joblist"></div>
   </div>
   <div id="detail"><div class="empty">select or upload a video →</div></div>
@@ -196,33 +223,148 @@ function errText(err) {
 }
 
 // ---------- upload ----------
-function setUploadLabel(text, busy) {
-  const box = $("#uploadbox");
-  box.textContent = text;
-  box.setAttribute("aria-disabled", busy ? "true" : "false");
+// Must list the same extensions as SUPPORTED_EXTENSIONS in
+// clipforge/ingest/ingest.py (tests/test_ui_static.py compares the two).
+const ACCEPTED_EXT = [".avi", ".m4v", ".mkv", ".mov", ".mp4", ".webm"];
+$("#file").accept = ACCEPTED_EXT.join(",");
+
+const uploadQueue = [];      // files waiting for their turn (one upload at a time)
+let uploadTotal = 0, uploadDone = 0;
+
+function isVideoName(name) {
+  const dot = name.lastIndexOf(".");
+  return dot >= 0 && ACCEPTED_EXT.includes(name.slice(dot).toLowerCase());
 }
-function pickFile() { if (!uploading) $("#file").click(); }
+function setUploadLabel(text, busy, pct) {
+  $("#uploadlabel").textContent = text;
+  $("#uploadbox").setAttribute("aria-disabled", busy ? "true" : "false");
+  const bar = $("#uploadbar");
+  bar.hidden = pct === undefined;
+  if (pct !== undefined) bar.value = pct;
+}
+function uploadMessage(text) {
+  $("#uploadmsg").append(h("div", {class: "err", role: "alert", text}));
+}
+function clearUploadMessages() { $("#uploadmsg").replaceChildren(); }
+
+// POST one file with XMLHttpRequest, because fetch() cannot report upload
+// progress. onPct gets a whole percentage while the bytes go out.
+function postFile(file, onPct) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/jobs");
+    xhr.responseType = "text";
+    xhr.upload.onprogress = e => {
+      if (e.lengthComputable && e.total > 0) onPct(Math.min(100, Math.floor(e.loaded * 100 / e.total)));
+    };
+    xhr.upload.onload = () => onPct(100);
+    xhr.onerror = () => reject(new Unreachable("could not reach the server"));
+    xhr.onabort = xhr.onerror;
+    xhr.onload = () => {
+      let body = null;
+      try { body = JSON.parse(xhr.responseText); } catch (_) { /* non-JSON body */ }
+      if (xhr.status >= 200 && xhr.status < 300 && body && body.job_id) { resolve(body); return; }
+      let detail = xhr.statusText || ("HTTP " + xhr.status);
+      if (body && typeof body.detail === "string") detail = body.detail;
+      else if (body && body.detail) detail = JSON.stringify(body.detail);
+      reject(new Error(detail));
+    };
+    const fd = new FormData();
+    fd.append("file", file);
+    xhr.send(fd);
+  });
+}
+
+// Accept files from the picker or a drop: reject non-videos on the spot (no
+// request), queue the rest. Uploads then run strictly one after another.
+function addFiles(files) {
+  const list = [...files];
+  if (!list.length) return;
+  if (!uploading) { clearUploadMessages(); uploadTotal = uploadDone = 0; }
+  for (const f of list) {
+    if (!isVideoName(f.name)) {
+      uploadMessage(`${f.name}: not a video file (accepted: ${ACCEPTED_EXT.join(" ")})`);
+      continue;
+    }
+    uploadQueue.push(f);
+    uploadTotal++;
+  }
+  if (!uploading && uploadQueue.length) pumpUploads();
+}
+
+async function pumpUploads() {
+  uploading = true;
+  while (uploadQueue.length) {
+    const f = uploadQueue.shift();
+    const tag = `${f.name}${uploadTotal > 1 ? ` (${uploadDone + 1}/${uploadTotal})` : ""}`;
+    setUploadLabel(`uploading ${tag} · 0%`, true, 0);
+    try {
+      const {job_id} = await postFile(f, pct => {
+        setUploadLabel(pct < 100 ? `uploading ${tag} · ${pct}%` : `uploaded ${tag} · 100% · ingesting…`, true, pct);
+      });
+      uploadDone++;
+      // don't pull the reviewer away from the clips they are working on
+      if (!currentJob) currentJob = job_id;
+      toast("uploaded " + f.name + " · processing", "info");
+      refresh();                         // the new job shows its pipeline progress
+    } catch (err) {
+      uploadTotal--;
+      uploadMessage(`${f.name}: ${errText(err)}`);
+    }
+  }
+  uploading = false;
+  setUploadLabel(UPLOAD_LABEL, false);
+  refresh();
+}
+
+function pickFile() { $("#file").click(); }
 $("#uploadbox").addEventListener("click", pickFile);
 $("#uploadbox").addEventListener("keydown", e => {
   if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickFile(); }
 });
-$("#file").addEventListener("change", async e => {
-  const f = e.target.files[0];
+$("#file").addEventListener("change", e => {
+  const files = [...e.target.files];
   e.target.value = "";                    // allow picking the same file again
-  if (!f || uploading) return;
-  uploading = true;
-  setUploadLabel("uploading…", true);
-  try {
-    const fd = new FormData(); fd.append("file", f);
-    const {job_id} = await api("/api/jobs", {method: "POST", body: fd});
-    // don't pull the reviewer away from the clips they are working on
-    if (!currentJob) currentJob = job_id;
-    toast("uploaded " + f.name + " · processing", "info");
-  } catch (err) { toast("upload failed: " + errText(err), "err"); }
-  uploading = false;
-  setUploadLabel(UPLOAD_LABEL, false);
-  refresh();
+  addFiles(files);
 });
+
+// Drag and drop onto the sidebar. Only drags that carry files react; every
+// other drag is left alone. Dropping a file anywhere else on the page must
+// not make the browser navigate to it, so the window swallows those too.
+let dragDepth = 0;
+const hasFiles = e => !!e.dataTransfer && [...(e.dataTransfer.types || [])].includes("Files");
+function setDragOver(on) {
+  $("#sidebar").classList.toggle("dragover", on);
+  $("#uploadbox").classList.toggle("dragover", on);
+}
+const sidebar = $("#sidebar");
+sidebar.addEventListener("dragenter", e => {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  dragDepth++;
+  setDragOver(true);
+});
+sidebar.addEventListener("dragover", e => {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "copy";
+});
+sidebar.addEventListener("dragleave", e => {
+  if (!hasFiles(e)) return;
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) setDragOver(false);
+});
+sidebar.addEventListener("drop", e => {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  dragDepth = 0;
+  setDragOver(false);
+  addFiles(e.dataTransfer.files);
+});
+for (const type of ["dragover", "drop"]) {
+  window.addEventListener(type, e => { if (hasFiles(e)) e.preventDefault(); });
+}
+window.addEventListener("dragend", () => { dragDepth = 0; setDragOver(false); });
 
 // ---------- refresh + polling ----------
 // Polling runs only while some job reports running:true. refresh() decides
@@ -811,6 +953,7 @@ async function exportExamples(jobId) {
   } catch (err) { toast("export failed: " + errText(err), "err"); }
 }
 
+setUploadLabel(UPLOAD_LABEL, false);
 refresh();
 </script>
 </body>

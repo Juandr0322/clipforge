@@ -5,6 +5,7 @@ Uses sync_pipeline=True (stages run inline) and mock engines, so this is a
 true end-to-end test: upload bytes in -> rendered clips + reviews +
 metrics + few-shot export out.
 """
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -500,3 +501,210 @@ def test_cli_ingest_rejects_unsafe_job_id(tmp_path, monkeypatch, capsys, bad):
     assert not called
     assert "job-id" in capsys.readouterr().err
     assert not (tmp_path / "ws").exists()
+
+
+# ------------------------------------------- F07: upload + review robustness
+
+def _real_server(app):
+    """Run the app under uvicorn in a thread, so requests really overlap
+    (TestClient gives each request its own event loop)."""
+    import socket
+    import threading
+    import uvicorn
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(
+        app, host="127.0.0.1", port=port, log_level="error"))
+    t = threading.Thread(target=server.run, daemon=True)
+    t.start()
+    import time
+    deadline = time.time() + 10
+    while not server.started and time.time() < deadline:
+        time.sleep(0.05)
+    assert server.started
+    return server, t, f"http://127.0.0.1:{port}"
+
+
+def test_slow_upload_does_not_block_other_requests(tmp_path, source_video,
+                                                   monkeypatch):
+    import threading
+    import time
+    from types import SimpleNamespace
+
+    import httpx
+
+    from clipforge.server import app as appmod
+
+    def slow_ingest(path, workspace, job_id=None):
+        time.sleep(3)                       # stands in for a 90 s video
+        return SimpleNamespace(job_id=job_id)
+
+    monkeypatch.setattr(appmod, "ingest", slow_ingest)
+    monkeypatch.setattr(appmod, "run_pipeline", lambda d, cfg, progress=None: None)
+    server, thread, base = _real_server(
+        create_app(tmp_path / "ws", config=MOCK_CFG))
+    try:
+        result = {}
+
+        def upload():
+            with source_video.open("rb") as f:
+                result["r"] = httpx.post(
+                    base + "/api/jobs", timeout=30,
+                    files={"file": ("slow.mp4", f, "video/mp4")})
+
+        up = threading.Thread(target=upload)
+        up.start()
+        time.sleep(0.5)                     # the upload is now inside ingest
+        assert up.is_alive()
+        worst = 0.0
+        for _ in range(5):
+            t0 = time.time()
+            assert httpx.get(base + "/api/jobs", timeout=10).status_code == 200
+            worst = max(worst, time.time() - t0)
+            time.sleep(0.1)
+        assert up.is_alive(), "ingest finished too early to prove anything"
+        assert worst < 1.0, f"GET /api/jobs took {worst:.2f}s during an upload"
+        up.join(15)
+        assert result["r"].status_code == 200
+    finally:
+        server.should_exit = True
+        thread.join(10)
+
+
+@pytest.fixture(scope="module")
+def _ingested_once(tmp_path_factory, source_video):
+    from clipforge.ingest.ingest import ingest
+    ws = tmp_path_factory.mktemp("ws_f07")
+    ingest(source_video, ws, job_id="job1")
+    return ws / "job1"
+
+
+@pytest.fixture()
+def ingested(tmp_path, _ingested_once):
+    """A private workspace holding one ingested (not yet processed) job."""
+    ws = tmp_path / "ws"
+    app = create_app(ws, config=MOCK_CFG, sync_pipeline=True)
+    shutil.copytree(_ingested_once, ws / "job1")
+    return ws, TestClient(app, raise_server_exceptions=False), None
+
+
+def test_simultaneous_reviews_are_all_saved(ingested):
+    import threading
+    ws, c, _ = ingested
+    n = 8
+    barrier = threading.Barrier(n)
+    codes: dict[int, int] = {}
+
+    def post(cid):
+        barrier.wait()
+        r = c.post(f"/api/jobs/job1/clips/{cid}/review",
+                   json={"decision": "approved", "note": f"n{cid}"})
+        codes[cid] = r.status_code
+
+    for rnd in range(3):                    # a race is not certain: try 3 rounds
+        ids = range(rnd * n, rnd * n + n)
+        threads = [threading.Thread(target=post, args=(i,)) for i in ids]
+        barrier.reset()
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(30)
+    assert set(codes.values()) == {200}, codes
+    saved = load_reviews(ws / "job1")
+    assert sorted(r.clip_id for r in saved.reviews) == list(range(3 * n))
+    assert not list((ws / "job1").glob("*.tmp"))     # no temp file left behind
+
+
+def test_save_reviews_uses_a_fresh_temp_file_per_write(tmp_path, monkeypatch):
+    seen = []
+    real_replace = Path.replace
+
+    def spy(self, target):
+        seen.append(self.name)
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", spy)
+    save_reviews(tmp_path, ReviewSet())
+    save_reviews(tmp_path, ReviewSet())
+    assert len(seen) == 2 and seen[0] != seen[1]
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_failed_save_leaves_old_file_and_no_temp(tmp_path, monkeypatch):
+    save_reviews(tmp_path, ReviewSet(reviews=[
+        Review(clip_id=1, decision="approved")]))
+
+    def boom(self, target):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "replace", boom)
+    with pytest.raises(OSError):
+        save_reviews(tmp_path, ReviewSet())
+    monkeypatch.undo()
+    assert [r.clip_id for r in load_reviews(tmp_path).reviews] == [1]
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+@pytest.mark.parametrize("body", [
+    {"adjusted_start": -0.5},                        # before the video
+    {"adjusted_end": 60.5},                          # past the 60 s source
+    {"adjusted_start": 61.0, "adjusted_end": 62.0},
+    {"adjusted_start": 10.0, "adjusted_end": 10.0},  # empty
+    {"adjusted_start": 20.0, "adjusted_end": 10.0},  # reversed
+])
+def test_out_of_range_or_reversed_trim_is_400_and_stores_nothing(ingested, body):
+    _post_bad_trim(ingested, body)
+
+
+@pytest.mark.parametrize("raw", ['{"decision":"approved","adjusted_start":NaN}',
+                                 '{"decision":"approved","adjusted_end":Infinity}'])
+def test_non_finite_trim_is_400(ingested, raw):
+    ws, c, _ = ingested
+    r = c.post("/api/jobs/job1/clips/0/review", content=raw,
+               headers={"Content-Type": "application/json"})
+    assert r.status_code in (400, 422), r.text
+    assert load_reviews(ws / "job1").reviews == []
+
+
+def _post_bad_trim(ingested, body):
+    ws, c, _ = ingested
+    r = c.post("/api/jobs/job1/clips/0/review",
+               json={"decision": "approved", **body})
+    assert r.status_code == 400, r.text
+    assert "trim" in r.json()["detail"]
+    assert load_reviews(ws / "job1").reviews == []
+    assert not (ws / "job1" / "reviews.json").exists()
+
+
+@pytest.mark.parametrize("body", [
+    {}, {"adjusted_start": 0.0}, {"adjusted_end": 60.0},
+    {"adjusted_start": 0.0, "adjusted_end": 60.0},
+    {"adjusted_start": 12.5, "adjusted_end": 30.25},
+])
+def test_in_range_trim_is_saved(ingested, body):
+    ws, c, _ = ingested
+    r = c.post("/api/jobs/job1/clips/0/review",
+               json={"decision": "approved", **body})
+    assert r.status_code == 200, r.text
+    got = load_reviews(ws / "job1").get(0)
+    assert got.adjusted_start == body.get("adjusted_start")
+    assert got.adjusted_end == body.get("adjusted_end")
+
+
+def test_one_sided_trim_is_checked_against_the_clip(client):
+    jid = client.get("/api/jobs").json()[0]["job_id"]
+    clip = client.get(f"/api/jobs/{jid}").json()["clips"][0]
+    for body in ({"adjusted_start": clip["end"] + 1},
+                 {"adjusted_end": max(0.0, clip["start"] - 1)}):
+        r = client.post(f"/api/jobs/{jid}/clips/{clip['id']}/review",
+                        json={"decision": "approved", **body})
+        assert r.status_code == 400, (body, r.text)
+
+
+def test_junk_mp4_gives_the_ingest_message_and_leaves_no_job(fresh):
+    ws, c = fresh
+    r = c.post("/api/jobs", files={"file": ("junk.mp4", b"just text", "video/mp4")})
+    assert r.status_code == 400
+    assert isinstance(r.json()["detail"], str) and r.json()["detail"]
+    assert _job_dirs(ws) == [] and _uploads_empty(ws)

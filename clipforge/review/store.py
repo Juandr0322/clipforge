@@ -9,6 +9,9 @@ the system's real training data:
 """
 from __future__ import annotations
 
+import os
+import threading
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, Optional
@@ -52,10 +55,39 @@ def load_reviews(job_dir: Path) -> ReviewSet:
 
 
 def save_reviews(job_dir: Path, rs: ReviewSet) -> None:
+    """Atomically replace reviews.json.
+
+    Every write goes through its own temp file, so two writers can never
+    rename each other's file out from under them. Use `upsert_review` when
+    the new content depends on what is already saved."""
     p = reviews_path(job_dir)
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(rs.model_dump_json(indent=2))
-    tmp.replace(p)
+    tmp = p.with_name(f"{p.name}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        tmp.write_text(rs.model_dump_json(indent=2))
+        tmp.replace(p)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+_locks: dict[str, threading.Lock] = {}
+_locks_guard = threading.Lock()
+
+
+def _job_lock(job_dir: Path) -> threading.Lock:
+    key = os.path.abspath(job_dir)
+    with _locks_guard:
+        return _locks.setdefault(key, threading.Lock())
+
+
+def upsert_review(job_dir: Path, r: Review) -> ReviewSet:
+    """Load, upsert and save one review under a per-job lock, so concurrent
+    saves for different clips all survive (load/modify/save is not atomic)."""
+    with _job_lock(job_dir):
+        rs = load_reviews(job_dir)
+        rs.upsert(r)
+        save_reviews(job_dir, rs)
+        return rs
 
 
 # ------------------------------------------------------------------ metrics

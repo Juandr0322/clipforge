@@ -107,3 +107,34 @@ def test_view_prefs_storage_is_guarded():
     for m in re.finditer(r"localStorage", src):
         before = src[:m.start()]
         assert before.rfind("try {") > before.rfind("} catch"), "unguarded localStorage"
+
+
+# ---- F07: upload ----------------------------------------------------------
+
+def test_client_extensions_match_the_servers():
+    from clipforge.ingest.ingest import SUPPORTED_EXTENSIONS
+    m = re.search(r"const ACCEPTED_EXT = \[(.*?)\];", _source(), re.S)
+    assert m, "ACCEPTED_EXT not found"
+    client = set(re.findall(r'"([^"]+)"', m.group(1)))
+    assert client == set(SUPPORTED_EXTENSIONS)
+
+
+def test_upload_progress_comes_from_xhr_upload_onprogress():
+    src = _source()
+    assert "xhr.upload.onprogress" in src
+    # fetch() cannot report upload progress, so POST /api/jobs must not use it
+    assert "/api/jobs\", {method: \"POST\"" not in src
+    assert not re.search(r"fetch\(\s*[\"']/api/jobs[\"']", src)
+
+
+def test_drag_and_drop_is_wired_without_inline_handlers():
+    src = _source()
+    for ev in ("dragenter", "dragover", "dragleave", "drop"):
+        assert f'"{ev}"' in src, ev
+    assert 'id="file" multiple' in src
+
+
+def test_phone_layout_rules_exist():
+    src = _source()
+    assert "@media (max-width:700px)" in src
+    assert "flex-direction:column" in src.split("@media (max-width:700px)")[1]
