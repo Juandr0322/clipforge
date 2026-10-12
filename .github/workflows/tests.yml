@@ -58,4 +58,4 @@ jobs:
           CLIPFORGE_ASR: mock
           CLIPFORGE_HL: mock
           CLIPFORGE_DETECTOR: haar
-        run: python -m pytest tests/test_server.py tests/test_ui_static.py tests/test_encoding.py -q
+        run: python -m pytest tests/test_server.py tests/test_ui_static.py tests/test_encoding.py tests/test_cli_preflight.py -q
