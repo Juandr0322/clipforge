@@ -14,3 +14,7 @@
 2026-10-12 | F06 | reviewer | MINOR | selection jumped to first clip when a refresh removed the selected card (next A could hit an unseen clip)
 2026-10-12 | F06 | tester | HIGH | concurrent review POSTs lose updates / 500: unlocked read-modify-write + shared reviews.json.tmp
 2026-10-12 | F06 | tester | MINOR | API accepts trim values like -5 and 99999
+2026-10-12 | F07 | reviewer | MAJOR | IngestError 400 leaked absolute workspace path, job id and raw ffprobe output to the page
+2026-10-12 | F07 | reviewer | MAJOR | Windows: os.replace fails while reviews.json is open in an unlocked reader → 500 + lost review
+2026-10-12 | F07 | reviewer | MINOR | catch-all 500 handler returned str(exc); upload XHR had no timeout
+2026-10-12 | F07 | lead | MINOR | browser test waited 30 s for a 90 s ingest that takes 27-40 s under load (timing, not regression)

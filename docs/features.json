@@ -162,7 +162,7 @@
         "8 simultaneous POST /api/jobs/{id}/clips/{n}/review requests for different clips all return 200 and all 8 reviews are persisted; none returns 500 (test with threads)",
         "Review trim values outside [0, source duration] or with start >= end return 400 and store nothing (test)"
       ],
-      "passes": false,
+      "passes": true,
       "notes": " Added after F05 testing: POST /api/jobs is async def but runs blocking ingest on the event loop, stalling all requests ~12 s; and there is no mobile layout (390px makes #detail 100px wide). Added after F06 testing: load_reviews/upsert/save_reviews are unlocked and share one reviews.json.tmp, so concurrent saves lose updates or 500 (FileNotFoundError on rename). Use a per-job lock in the server and a unique temp file per write."
     },
     {
