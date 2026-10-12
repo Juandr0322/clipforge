@@ -40,3 +40,6 @@ Thumbs.db
 
 # Per-machine Claude Code settings
 .claude/settings.local.json
+
+# Claude Code worktrees (one per parallel builder)
+.claude/worktrees/

@@ -32,6 +32,14 @@ You
 
 ## Setup (about 15 minutes)
 
+**Windows shortcut:** in PowerShell as Administrator run `wsl --install -d Ubuntu-24.04` and restart. Then, in the Ubuntu window:
+```bash
+cd ~ && git clone https://github.com/Juandr0322/clipforge.git && cd clipforge && bash scripts/setup-wsl.sh
+```
+The script installs everything below, asks for the API key with hidden input, and checks the sandbox. Afterwards, do step 4 only.
+
+Parallel builders: `builder.md` sets `isolation: worktree`, so each builder edits its own copy under `.claude/worktrees/`; `worktree.baseRef: "head"` makes those copies start from your local branch. Builders never get `.env` (tests use mock engines).
+
 **1. Prerequisites**
 - Latest Claude Code (`claude update`), git, Node.js.
 - macOS, Linux, or Windows **via WSL2** (the sandbox doesn't run on native Windows).

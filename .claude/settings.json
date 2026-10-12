@@ -12,7 +12,11 @@
       "Bash(git push --force *)",
       "Bash(git push -f *)",
       "Read(./client_secret*.json)",
-      "Read(./**/token*.json)"
+      "Read(./**/token*.json)",
+      "Read(./**/.env)",
+      "Read(./**/.env.*)",
+      "Read(//mnt/**)",
+      "Edit(//mnt/**)"
     ],
     "ask": [
       "Bash(git push *)",
@@ -69,6 +73,12 @@
           "mode": "deny"
         }
       ]
+    },
+    "failIfUnavailable": true,
+    "filesystem": {
+      "denyRead": [
+        "/mnt"
+      ]
     }
   },
   "hooks": {
@@ -93,5 +103,8 @@
         ]
       }
     ]
+  },
+  "worktree": {
+    "baseRef": "head"
   }
 }
