@@ -13,8 +13,7 @@ from fastapi.testclient import TestClient
 
 from clipforge.pipeline import PipelineConfig, run_pipeline
 from clipforge.review.store import (
-    Review, ReviewSet, export_examples, job_metrics, load_reviews,
-    save_reviews,
+    Review, ReviewSet, job_metrics, load_reviews, save_reviews,
 )
 from clipforge.server.app import create_app
 
@@ -55,6 +54,23 @@ def test_pipeline_config_fallbacks(monkeypatch):
                          detector="mediapipe").resolve()
     assert cfg.highlight_engine == "mock"      # no key -> mock
     assert cfg.detector in ("haar", "mediapipe")  # haar if mp not installed
+
+
+@pytest.mark.parametrize("exc", [ImportError("no mediapipe"),
+                                 RuntimeError("protobuf mismatch")])
+def test_pipeline_falls_back_to_haar_without_mediapipe(monkeypatch, exc):
+    """Covers both 'not installed' and 'installed but import raises'."""
+    import importlib
+    real = importlib.import_module
+
+    def fake(name, *a, **k):
+        if name == "mediapipe":
+            raise exc
+        return real(name, *a, **k)
+
+    monkeypatch.setattr(importlib, "import_module", fake)
+    cfg = PipelineConfig(detector="mediapipe").resolve()
+    assert cfg.detector == "haar"
 
 
 def test_run_pipeline_end_to_end(tmp_path, source_video):

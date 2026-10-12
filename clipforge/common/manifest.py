@@ -7,7 +7,6 @@ share in-memory state — this file IS the interface between them.
 """
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
