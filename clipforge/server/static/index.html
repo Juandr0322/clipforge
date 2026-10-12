@@ -76,141 +76,446 @@
   .err { color:var(--bad); font-size:12px; margin-bottom:12px; white-space:pre-wrap; }
   a.qa { color:var(--dim); font-size:11px; }
   #exportbar { margin:16px 0; display:flex; gap:10px; align-items:center; color:var(--dim); font-size:12px; }
+  [hidden] { display:none !important; }
+  #jobcount { color:var(--dim); font-size:12px; }
+  #file { display:none; }
+  .upload[aria-disabled="true"] { opacity:.6; cursor:progress; }
+  .job:focus-visible, .upload:focus-visible { outline:1px solid var(--accent); outline-offset:2px; }
+  .err.warn { color:var(--warn); }
+  .err button { margin-left:10px; }
+  button:disabled { opacity:.5; cursor:default; }
+  .clip .vslot { display:flex; flex-direction:column; }
+  .clip .trim .note { flex:1; }
+  #toasts {
+    position:fixed; right:16px; bottom:16px; z-index:10; width:min(360px,calc(100vw - 32px));
+    display:flex; flex-direction:column; gap:8px; pointer-events:none;
+  }
+  .toast {
+    background:var(--panel2); border:1px solid var(--line); border-left-width:3px;
+    border-radius:6px; padding:10px 12px; font-size:12px; line-height:1.5;
+    overflow-wrap:anywhere; box-shadow:0 4px 16px rgba(0,0,0,.4);
+  }
+  .toast.ok  { border-left-color:var(--good); }
+  .toast.err { border-left-color:var(--bad); color:var(--bad); }
+  .toast.info { border-left-color:var(--accent); }
 </style>
 </head>
 <body>
 <header>
   <h1>CLIPFORGE</h1>
-  <span id="jobcount" style="color:var(--dim);font-size:12px"></span>
+  <span id="jobcount"></span>
   <span class="metrics" id="globalmetrics"></span>
 </header>
 <main>
   <div id="sidebar">
-    <div class="upload" id="uploadbox">+ upload long-form video</div>
-    <input type="file" id="file" accept="video/*" style="display:none">
+    <div class="upload" id="uploadbox" role="button" tabindex="0">+ upload long-form video</div>
+    <input type="file" id="file" accept="video/*">
     <div id="joblist"></div>
   </div>
   <div id="detail"><div class="empty">select or upload a video →</div></div>
 </main>
+<div id="toasts" aria-live="polite"></div>
 <script>
+"use strict";
+// All server-supplied text goes into the DOM through textContent / .value
+// only (never as HTML), so a filename, hook or note is always shown literally.
 const $ = s => document.querySelector(s);
 const STAGES = ["ingested","transcribed","candidates_ready","refined","reframed","rendered"];
-let currentJob = null, pollTimer = null;
+const POLL_MS = 4000;
+const UPLOAD_LABEL = "+ upload long-form video";
+let currentJob = null;       // job whose detail pane is shown
+let uploading = false;
+
+function h(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v === null || v === undefined || v === false) continue;
+    if (/^on/i.test(k)) throw new Error("event handler attributes are not allowed: " + k);
+    if (k === "class") e.className = v;
+    else if (k === "text") e.textContent = v;
+    else e.setAttribute(k, v);
+  }
+  e.append(...kids);
+  return e;
+}
+
+// ---------- toasts ----------
+function toast(msg, kind = "ok") {
+  const box = $("#toasts");
+  const t = h("div", {class: "toast " + kind, role: kind === "err" ? "alert" : "status", text: msg});
+  box.append(t);
+  while (box.children.length > 4) box.firstChild.remove();
+  setTimeout(() => t.remove(), kind === "err" ? 7000 : 3000);
+}
 
 async function api(path, opts) {
   const r = await fetch(path, opts);
-  if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
+  if (!r.ok) {
+    let detail = r.statusText || ("HTTP " + r.status);
+    try {
+      const body = await r.json();
+      if (typeof body.detail === "string") detail = body.detail;
+      else if (body.detail) detail = JSON.stringify(body.detail);
+    } catch (_) { /* non-JSON error body */ }
+    throw new Error(detail);
+  }
   return r.json();
 }
 
+function errText(err) {
+  // fetch() rejects with TypeError when the server is unreachable
+  return err instanceof TypeError ? "could not reach the server" : err.message;
+}
+
 // ---------- upload ----------
-$("#uploadbox").onclick = () => $("#file").click();
-$("#file").onchange = async e => {
+function setUploadLabel(text, busy) {
+  const box = $("#uploadbox");
+  box.textContent = text;
+  box.setAttribute("aria-disabled", busy ? "true" : "false");
+}
+function pickFile() { if (!uploading) $("#file").click(); }
+$("#uploadbox").addEventListener("click", pickFile);
+$("#uploadbox").addEventListener("keydown", e => {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickFile(); }
+});
+$("#file").addEventListener("change", async e => {
   const f = e.target.files[0];
-  if (!f) return;
-  $("#uploadbox").textContent = "uploading…";
-  const fd = new FormData(); fd.append("file", f);
+  e.target.value = "";                    // allow picking the same file again
+  if (!f || uploading) return;
+  uploading = true;
+  setUploadLabel("uploading…", true);
   try {
-    const {job_id} = await api("/api/jobs", {method:"POST", body:fd});
-    currentJob = job_id;
-  } catch (err) { alert(err.message); }
-  $("#uploadbox").textContent = "+ upload long-form video";
+    const fd = new FormData(); fd.append("file", f);
+    const {job_id} = await api("/api/jobs", {method: "POST", body: fd});
+    // don't pull the reviewer away from the clips they are working on
+    if (!currentJob) currentJob = job_id;
+    toast("uploaded " + f.name + " · processing", "info");
+  } catch (err) { toast("upload failed: " + errText(err), "err"); }
+  uploading = false;
+  setUploadLabel(UPLOAD_LABEL, false);
   refresh();
-};
+});
 
-// ---------- job list ----------
+// ---------- refresh + polling ----------
+// Polling runs only while some job reports running:true. refresh() decides
+// after every pass whether to schedule the next one.
+let pollTimer = null, refreshing = false, refreshAgain = false;
+let wasPolling = false;      // the last successful job list had a running job
+let retriedAfterFail = false, lastRefreshAt = 0, offline = false;
+const RETRY_MS = 3000;
+
 async function refresh() {
-  const jobs = await api("/api/jobs");
-  $("#jobcount").textContent = jobs.length + " jobs";
-  $("#joblist").innerHTML = jobs.map(j => `
-    <div class="job ${j.job_id===currentJob?"active":""}" onclick="openJob('${j.job_id}')">
-      <div class="name">${j.filename}</div>
-      <div class="stage ${j.failed?"failed":""}">
-        ${j.failed ? "FAILED" : j.stage}${j.progress && j.stage!=="rendered" ? " · "+j.progress : ""}
-        · ${Math.round(j.duration)}s
-      </div>
-    </div>`).join("");
-  const gm = await api("/api/metrics");
-  $("#globalmetrics").textContent = gm.total_reviewed
-    ? `approval ${(gm.overall_approval_rate*100).toFixed(0)}% · avg trim ${gm.avg_trim_adjustment_sec}s · ${gm.total_reviewed} reviewed`
-    : "";
-  if (currentJob) renderDetail();
-}
+  if (refreshing) { refreshAgain = true; return; }
+  refreshing = true;
+  clearTimeout(pollTimer); pollTimer = null;
+  let delay = null;            // ms until the next automatic refresh, if any
+  let failure = null;
+  let jobs = null;
+  try {
+    jobs = await api("/api/jobs");
+  } catch (err) { failure = err; }
 
-window.openJob = id => { currentJob = id; refresh(); };
-
-// ---------- detail ----------
-async function renderDetail() {
-  const j = await api("/api/jobs/" + currentJob);
-  const doneIdx = STAGES.indexOf(j.stage);
-  const bar = STAGES.map((s,i) =>
-    `<span class="${i<=doneIdx?"done":(i===doneIdx+1&&!j.failed?"now":"")}">${s}</span>`).join("");
-  let html = `<div class="stagebar">${bar}</div>`;
-  if (j.failed) html += `<div class="err">stage failed: ${j.error}
-<button onclick="rerun()">retry pipeline</button></div>`;
-  else if (j.stage !== "rendered")
-    html += `<div class="err" style="color:var(--warn)">${j.progress || "working…"}</div>`;
-
-  if (j.clips.length) {
-    const m = j.metrics;
-    html += `<div id="exportbar">
-      job metrics: ${m.reviewed}/${j.clips.length} reviewed
-      ${m.approval_rate!==null ? "· approval "+(m.approval_rate*100).toFixed(0)+"%" : ""}
-      · avg trim ${m.avg_trim_adjustment_sec}s
-      <button onclick="exportExamples()">export approved → few-shot examples</button>
-    </div>`;
-    html += `<div class="clipgrid">` + j.clips.map(c => clipCard(c)).join("") + `</div>`;
-  } else if (j.stage === "rendered") {
-    html += `<div class="empty">pipeline found no strong clips in this video</div>`;
+  if (jobs) {
+    wasPolling = jobs.some(j => j.running);
+    if (wasPolling) delay = POLL_MS;
+    try {
+      renderJobs(jobs);
+      const gm = await api("/api/metrics");
+      $("#globalmetrics").textContent = gm.total_reviewed
+        ? `approval ${(gm.overall_approval_rate*100).toFixed(0)}% · avg trim ${gm.avg_trim_adjustment_sec}s · ${gm.total_reviewed} reviewed`
+        : "";
+      if (currentJob) await renderDetail(currentJob);
+    } catch (err) { failure = err; }   // polling decision above stays valid
+  } else if (wasPolling) {
+    delay = POLL_MS;                   // we were watching a running job: keep trying
   }
-  $("#detail").innerHTML = html;
+  if (!failure) retriedAfterFail = false;
+  else if (delay === null && !retriedAfterFail) {
+    // something failed while nothing is polling: one retry, then focus/visibility
+    retriedAfterFail = true;
+    delay = RETRY_MS;
+  }
+
+  if (failure) {
+    if (!offline) toast(errText(failure), "err");
+    offline = true;
+  } else offline = false;
+  lastRefreshAt = Date.now();
+  refreshing = false;
+  if (delay !== null) pollTimer = setTimeout(refresh, delay);
+  if (refreshAgain) { refreshAgain = false; refresh(); }
 }
 
-function clipCard(c) {
-  const r = c.review;
-  return `<div class="clip">
-    ${c.video_ready
-      ? `<video controls preload="metadata" src="/api/jobs/${currentJob}/clips/${c.id}/video"></video>`
-      : `<div class="meta">rendering…</div>`}
-    <div class="hook">“${c.hook}”</div>
-    <div class="meta">
-      <span class="score">score ${c.score}</span> · ${c.type} · ${c.duration}s
-      · ${c.start.toFixed(1)}s → ${c.end.toFixed(1)}s<br>${c.reason}
-      ${c.video_ready ? ` · <a class="qa" href="/api/jobs/${currentJob}/clips/${c.id}/qa" target="_blank">QA sheet</a>` : ""}
-    </div>
-    <div class="trim">
-      trim: <input id="ts${c.id}" placeholder="start" value="${r?.adjusted_start ?? ""}">
-      <input id="te${c.id}" placeholder="end" value="${r?.adjusted_end ?? ""}">
-      <input id="tn${c.id}" placeholder="note" style="flex:1" value="${r?.note ?? ""}">
-    </div>
-    <div class="btnrow">
-      <button class="approve ${r?.decision==="approved"?"on":""}"
-        onclick="review(${c.id},'approved')">✓ approve</button>
-      <button class="reject ${r?.decision==="rejected"?"on":""}"
-        onclick="review(${c.id},'rejected')">✗ reject</button>
-    </div>
-  </div>`;
+// Coming back to the tab (or the window) is a cheap moment to re-check, and
+// recovers from a refresh that failed while nothing was being polled.
+function refreshIfStale() {
+  if (document.visibilityState === "visible" && !refreshing &&
+      Date.now() - lastRefreshAt > 1000) refresh();
+}
+document.addEventListener("visibilitychange", refreshIfStale);
+window.addEventListener("focus", refreshIfStale);
+
+// ---------- job list (updated in place) ----------
+const jobEls = new Map();    // job_id -> {el, name, stage}
+
+function buildJobEl(id) {
+  const name = h("div", {class: "name"});
+  const stage = h("div", {class: "stage"});
+  const el = h("div", {class: "job", role: "button", tabindex: "0", "data-job": id}, name, stage);
+  return {el, name, stage};
 }
 
-window.review = async (cid, decision) => {
-  const g = id => { const v = $(id).value.trim(); return v === "" ? null : parseFloat(v); };
-  await api(`/api/jobs/${currentJob}/clips/${cid}/review`, {
-    method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({decision,
-      adjusted_start:g(`#ts${cid}`), adjusted_end:g(`#te${cid}`),
-      note: $(`#tn${cid}`).value})
-  });
+function renderJobs(jobs) {
+  $("#jobcount").textContent = jobs.length + (jobs.length === 1 ? " job" : " jobs");
+  const list = $("#joblist");
+  const seen = new Set();
+  let prev = null;
+  for (const j of jobs) {
+    seen.add(j.job_id);
+    let e = jobEls.get(j.job_id);
+    if (!e) { e = buildJobEl(j.job_id); jobEls.set(j.job_id, e); }
+    e.el.classList.toggle("active", j.job_id === currentJob);
+    e.name.textContent = j.filename;
+    e.name.title = j.filename;
+    const failed = j.failed && !j.running;      // a retry in progress is not "failed"
+    e.stage.classList.toggle("failed", failed);
+    e.stage.textContent =
+      (failed ? "FAILED" : j.stage) +
+      (j.progress && j.stage !== "rendered" ? " · " + j.progress : "") +
+      " · " + Math.round(j.duration) + "s";
+    const want = prev ? prev.nextSibling : list.firstChild;
+    if (want !== e.el) list.insertBefore(e.el, want);
+    prev = e.el;
+  }
+  for (const [id, e] of jobEls) if (!seen.has(id)) { e.el.remove(); jobEls.delete(id); }
+}
+
+function openJob(id) {
+  if (!id || id === currentJob) return;
+  currentJob = id;
+  // Drop the previous job's pane right now: until the new job's detail has
+  // loaded nothing on screen may be clickable against the wrong job.
+  D = null; cards.clear();
+  $("#detail").replaceChildren(h("div", {class: "empty", text: "loading…"}));
+  for (const [jid, e] of jobEls) e.el.classList.toggle("active", jid === id);
   refresh();
-};
+}
+$("#joblist").addEventListener("click", e => {
+  const el = e.target.closest(".job");
+  if (el) openJob(el.dataset.job);
+});
+$("#joblist").addEventListener("keydown", e => {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  const el = e.target.closest(".job");
+  if (el) { e.preventDefault(); openJob(el.dataset.job); }
+});
 
-window.rerun = async () => { await api(`/api/jobs/${currentJob}/rerun`, {method:"POST"}); refresh(); };
-window.exportExamples = async () => {
-  const r = await api(`/api/jobs/${currentJob}/export-examples`, {method:"POST"});
-  alert(`wrote ${r.written.length} example file(s) to ${r.examples_dir}`);
-};
+// ---------- detail pane (skeleton built once per job, then updated in place) ----------
+let D = null;                // refs to the current job's skeleton
+const cards = new Map();     // clip id -> card refs
+
+function buildSkeleton(jobId) {
+  const stagebar = h("div", {class: "stagebar"}, ...STAGES.map(s => h("span", {text: s})));
+  const status = h("div", {class: "err", hidden: ""});
+  const statusText = h("span");
+  const retry = h("button", {type: "button", "data-act": "rerun", "data-job": jobId, text: "retry pipeline"});
+  status.append(statusText, retry);
+  const exportText = h("span");
+  const exportBtn = h("button", {type: "button", "data-act": "export", "data-job": jobId,
+                                 text: "export approved → few-shot examples"});
+  const exportbar = h("div", {id: "exportbar", hidden: ""}, exportText, exportBtn);
+  const grid = h("div", {class: "clipgrid", hidden: ""});
+  const empty = h("div", {class: "empty", hidden: "", text: "pipeline found no strong clips in this video"});
+  $("#detail").replaceChildren(stagebar, status, exportbar, grid, empty);
+  cards.clear();
+  D = {jobId, stagebar, status, statusText, retry, exportText, exportbar, grid, empty};
+}
+
+async function renderDetail(jobId) {
+  const j = await api("/api/jobs/" + encodeURIComponent(jobId));
+  if (jobId !== currentJob) return;       // user switched jobs while we waited
+  if (!D || D.jobId !== jobId) buildSkeleton(jobId);
+
+  // a rerun leaves the old error in the manifest while it runs: show progress, not the error
+  const failed = j.failed && !j.running;
+  const doneIdx = STAGES.indexOf(j.stage);
+  [...D.stagebar.children].forEach((span, i) => {
+    span.className = i <= doneIdx ? "done" : (i === doneIdx + 1 && !failed ? "now" : "");
+  });
+
+  if (failed) {
+    D.status.hidden = false;
+    D.status.className = "err";
+    D.statusText.textContent = "stage failed: " + (j.error || "unknown error");
+    D.retry.hidden = false;
+    D.retry.disabled = false;
+  } else if (j.running || j.stage !== "rendered") {
+    D.status.hidden = false;
+    D.status.className = "err warn";
+    D.statusText.textContent = j.progress || "working…";
+    D.retry.hidden = true;
+  } else {
+    D.status.hidden = true;
+  }
+
+  const hasClips = j.clips.length > 0;
+  D.exportbar.hidden = D.grid.hidden = !hasClips;
+  D.empty.hidden = hasClips || j.stage !== "rendered";
+  if (hasClips) {
+    const m = j.metrics;
+    D.exportText.textContent =
+      `job metrics: ${m.reviewed}/${j.clips.length} reviewed` +
+      (m.approval_rate !== null ? " · approval " + (m.approval_rate*100).toFixed(0) + "%" : "") +
+      ` · avg trim ${m.avg_trim_adjustment_sec}s`;
+  }
+  syncClips(j);
+}
+
+function syncClips(j) {
+  const seen = new Set();
+  let prev = null;
+  for (const c of j.clips) {
+    seen.add(c.id);
+    let card = cards.get(c.id);
+    if (!card) { card = buildCard(c.id, j.job_id); cards.set(c.id, card); }
+    updateCard(card, c, j.job_id);
+    const want = prev ? prev.nextSibling : D.grid.firstChild;
+    if (want !== card.el) D.grid.insertBefore(card.el, want);   // no-op when order is unchanged
+    prev = card.el;
+  }
+  for (const [id, card] of cards) if (!seen.has(id)) { card.el.remove(); cards.delete(id); }
+}
+
+function buildCard(id, jobId) {
+  const field = (name, ph, cls) =>
+    h("input", {placeholder: ph, class: cls, "data-field": name, autocomplete: "off"});
+  const slot = h("div", {class: "vslot"});
+  const hook = h("div", {class: "hook"});
+  const score = h("span", {class: "score"});
+  const info = h("span");
+  const reason = h("span");
+  const qa = h("a", {class: "qa", target: "_blank", rel: "noopener", text: "QA sheet"});
+  const qaWrap = h("span", {hidden: ""}, " · ", qa);
+  const meta = h("div", {class: "meta"}, score, info, h("br"), reason, qaWrap);
+  const ts = field("start", "start"), te = field("end", "end"), tn = field("note", "note", "note");
+  const approve = h("button", {type: "button", class: "approve", "data-act": "approved", text: "✓ approve"});
+  const reject = h("button", {type: "button", class: "reject", "data-act": "rejected", text: "✗ reject"});
+  const el = h("div", {class: "clip", "data-clip": id, "data-job": jobId},
+    slot, hook, meta,
+    h("div", {class: "trim"}, "trim: ", ts, te, tn),
+    h("div", {class: "btnrow"}, approve, reject));
+  return {id, jobId, el, slot, video: null, hook, score, info, reason, qa, qaWrap, ts, te, tn, approve, reject};
+}
+
+// Fill a field from the server unless the reviewer is editing it.
+function setField(input, value) {
+  const v = value === null || value === undefined ? "" : String(value);
+  input.dataset.server = v;                       // last value the server reported
+  if (input.dataset.dirty === "1" || document.activeElement === input) return;
+  if (input.value !== v) input.value = v;
+}
+
+function updateCard(card, c, jobId) {
+  const r = c.review;
+  card.hook.textContent = `“${c.hook}”`;
+  card.score.textContent = "score " + c.score;
+  card.info.textContent = ` · ${c.type} · ${c.duration}s · ${c.start.toFixed(1)}s → ${c.end.toFixed(1)}s`;
+  card.reason.textContent = c.reason ? c.reason : "";
+  card.qaWrap.hidden = !c.video_ready;
+  const base = `/api/jobs/${encodeURIComponent(jobId)}/clips/${c.id}`;
+  if (c.video_ready) {
+    card.qa.href = base + "/qa";
+    // create the <video> once; later refreshes must not touch it or playback restarts
+    if (!card.video) {
+      card.video = h("video", {controls: "", preload: "metadata", src: base + "/video"});
+      card.slot.replaceChildren(card.video);
+    }
+  } else if (!card.video && !card.slot.firstChild) {
+    card.slot.append(h("div", {class: "meta", text: "rendering…"}));
+  }
+  setField(card.ts, r?.adjusted_start);
+  setField(card.te, r?.adjusted_end);
+  setField(card.tn, r?.note);
+  card.approve.classList.toggle("on", r?.decision === "approved");
+  card.reject.classList.toggle("on", r?.decision === "rejected");
+}
+
+// remember which fields the reviewer has typed into, so polling never overwrites them
+$("#detail").addEventListener("input", e => {
+  if (e.target.dataset && e.target.dataset.field) e.target.dataset.dirty = "1";
+});
+// ...but once the reviewer leaves a field holding what the server has, it is clean again
+$("#detail").addEventListener("focusout", e => {
+  const t = e.target;
+  if (t.dataset && t.dataset.dirty === "1" && t.value === t.dataset.server) delete t.dataset.dirty;
+});
+
+$("#detail").addEventListener("click", e => {
+  const btn = e.target.closest("button[data-act]");
+  if (!btn || btn.disabled) return;
+  const act = btn.dataset.act;
+  // every action targets the job its own element was built for, never "whatever is open now"
+  if (act === "rerun") {
+    btn.disabled = true;               // re-enabled by the next refresh
+    rerun(btn.dataset.job);
+  }
+  else if (act === "export") exportExamples(btn.dataset.job);
+  else {
+    const el = btn.closest(".clip");
+    if (el) review(el.dataset.job, Number(el.dataset.clip), act);
+  }
+});
+
+// ---------- actions ----------
+async function review(jobId, cid, decision) {
+  const card = cards.get(cid);
+  if (!card || card.jobId !== jobId || card.saving) return;
+  const num = input => {
+    const v = input.value.trim();
+    return v === "" ? null : Number(v);
+  };
+  const start = num(card.ts), end = num(card.te);
+  if ((start !== null && !Number.isFinite(start)) || (end !== null && !Number.isFinite(end))) {
+    toast("trim start/end must be numbers", "err");
+    return;
+  }
+  const sent = {ts: card.ts.value, te: card.te.value, tn: card.tn.value};
+  card.saving = true;
+  card.approve.disabled = card.reject.disabled = true;
+  try {
+    await api(`/api/jobs/${encodeURIComponent(jobId)}/clips/${cid}/review`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({decision, adjusted_start: start, adjusted_end: end, note: sent.tn})
+    });
+    // fields now match the server, unless the reviewer kept typing meanwhile
+    for (const k of ["ts", "te", "tn"]) {
+      if (card[k].value === sent[k]) { delete card[k].dataset.dirty; card[k].dataset.server = sent[k]; }
+    }
+    toast(`clip ${cid + 1} ${decision} · saved`, "ok");
+    refresh();
+  } catch (err) {
+    toast("save failed: " + errText(err), "err");
+  }
+  card.saving = false;
+  card.approve.disabled = card.reject.disabled = false;
+}
+
+async function rerun(jobId) {
+  try {
+    await api(`/api/jobs/${encodeURIComponent(jobId)}/rerun`, {method: "POST"});
+    toast("pipeline restarted", "info");
+  } catch (err) { toast("retry failed: " + errText(err), "err"); }
+  refresh();
+}
+
+async function exportExamples(jobId) {
+  try {
+    const r = await api(`/api/jobs/${encodeURIComponent(jobId)}/export-examples`, {method: "POST"});
+    toast(`wrote ${r.written.length} example file(s) to ${r.examples_dir}`, "ok");
+  } catch (err) { toast("export failed: " + errText(err), "err"); }
+}
 
 refresh();
-pollTimer = setInterval(refresh, 4000);
 </script>
 </body>
 </html>
