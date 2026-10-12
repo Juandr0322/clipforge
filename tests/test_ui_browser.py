@@ -1010,9 +1010,9 @@ def test_server_rejection_is_shown_inline_and_the_zone_recovers(env, seeded, pag
     msg.wait_for(timeout=15000)
     shown = msg.inner_text()
     assert shown.startswith("junk.mp4: ")
-    # the server's own 400 text (it embeds a per-request job id, so compare the
-    # stable part)
-    assert "moov atom not found" in shown and "moov atom not found" in detail
+    # the server's own 400 text, which names no path, job id or ffprobe output
+    assert shown == "junk.mp4: " + detail
+    assert "ffprobe" not in shown and "/" not in shown and "moov" not in shown
     page.wait_for_function(
         "() => document.querySelector('#uploadbox').getAttribute('aria-disabled') === 'false'")
     _upload_zone_is_idle(page)

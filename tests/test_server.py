@@ -5,6 +5,7 @@ Uses sync_pipeline=True (stages run inline) and mock engines, so this is a
 true end-to-end test: upload bytes in -> rendered clips + reviews +
 metrics + few-shot export out.
 """
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -702,9 +703,122 @@ def test_one_sided_trim_is_checked_against_the_clip(client):
         assert r.status_code == 400, (body, r.text)
 
 
-def test_junk_mp4_gives_the_ingest_message_and_leaves_no_job(fresh):
+def test_junk_mp4_gives_a_safe_fixed_message_and_leaves_no_job(fresh, capfd):
     ws, c = fresh
     r = c.post("/api/jobs", files={"file": ("junk.mp4", b"just text", "video/mp4")})
     assert r.status_code == 400
-    assert isinstance(r.json()["detail"], str) and r.json()["detail"]
+    detail = r.json()["detail"]
+    assert isinstance(detail, str) and detail
+    for leak in ("/", "\\", str(ws), str(ws.parent), "ffprobe", "ffmpeg",
+                 "moov", "source.mp4", "Command failed"):
+        assert leak not in detail, leak
+    jid_like = re.compile(r"\d{8}-\d{6}")
+    assert not jid_like.search(detail)
     assert _job_dirs(ws) == [] and _uploads_empty(ws)
+    # the full reason is still available to the operator
+    assert "ingest rejected" in capfd.readouterr().err
+
+
+def test_missing_source_error_does_not_leak_the_path(fresh, monkeypatch):
+    from clipforge.ingest.ingest import IngestError
+    from clipforge.server import app as appmod
+
+    def boom(path, workspace, job_id=None):
+        raise IngestError(f"Source file not found: {path}")
+
+    monkeypatch.setattr(appmod, "ingest", boom)
+    ws, c = fresh
+    r = c.post("/api/jobs", files={"file": ("a.mp4", b"abc", "video/mp4")})
+    assert r.status_code == 400
+    assert str(ws) not in r.text and "not found" not in r.text and "/" not in r.json()["detail"]
+
+
+def test_unexpected_errors_return_a_generic_500(ingested, monkeypatch):
+    from clipforge.server import app as appmod
+
+    def boom(*a, **k):
+        raise RuntimeError("secret /abs/path detail")
+
+    monkeypatch.setattr(appmod, "upsert_review", boom)
+    _, c, _ = ingested
+    r = c.post("/api/jobs/job1/clips/0/review", json={"decision": "approved"})
+    assert r.status_code == 500
+    assert r.json() == {"detail": "Internal error"}
+
+
+def test_review_for_a_clip_the_job_does_not_have_is_404(client):
+    jid = client.get("/api/jobs").json()[0]["job_id"]
+    ids = {c["id"] for c in client.get(f"/api/jobs/{jid}").json()["clips"]}
+    missing = max(ids) + 100
+    r = client.post(f"/api/jobs/{jid}/clips/{missing}/review",
+                    json={"decision": "approved"})
+    assert r.status_code == 404
+    ok = client.post(f"/api/jobs/{jid}/clips/{min(ids)}/review",
+                     json={"decision": "approved"})
+    assert ok.status_code == 200
+
+
+def _flaky_replace(monkeypatch, failures):
+    """Behave like Windows: the first `failures` renames raise PermissionError."""
+    real = Path.replace
+    calls = {"n": 0}
+
+    def replace(self, target):
+        calls["n"] += 1
+        if calls["n"] <= failures:
+            raise PermissionError(5, "Access is denied (WinError 5)")
+        return real(self, target)
+
+    monkeypatch.setattr(Path, "replace", replace)
+    monkeypatch.setattr("clipforge.review.store.REPLACE_PAUSE_SEC", 0)
+    return calls
+
+
+def test_save_retries_when_the_rename_is_refused(tmp_path, monkeypatch):
+    calls = _flaky_replace(monkeypatch, failures=2)
+    save_reviews(tmp_path, ReviewSet(reviews=[Review(clip_id=3, decision="approved")]))
+    assert calls["n"] == 3
+    assert [r.clip_id for r in load_reviews(tmp_path).reviews] == [3]
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_save_gives_up_after_a_few_tries_and_cleans_up(tmp_path, monkeypatch):
+    _flaky_replace(monkeypatch, failures=99)
+    with pytest.raises(PermissionError):
+        save_reviews(tmp_path, ReviewSet())
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_review_request_survives_a_refused_rename(ingested, monkeypatch):
+    ws, c, _ = ingested
+    _flaky_replace(monkeypatch, failures=2)
+    r = c.post("/api/jobs/job1/clips/0/review", json={"decision": "approved"})
+    assert r.status_code == 200, r.text
+    assert load_reviews(ws / "job1").get(0).decision == "approved"
+
+
+def test_readers_wait_for_a_writer_holding_the_job_lock(tmp_path):
+    """On Windows a reader would block the writer's rename; every reader must
+    therefore take the same lock the writer holds."""
+    import threading
+    import time
+
+    from clipforge.review import store
+
+    save_reviews(tmp_path, ReviewSet(reviews=[Review(clip_id=1, decision="approved")]))
+    done = {}
+    started = threading.Event()
+
+    def read():
+        started.set()
+        done["reviews"] = load_reviews(tmp_path)
+        done["metrics"] = job_metrics(tmp_path)
+
+    with store._job_lock(tmp_path):
+        t = threading.Thread(target=read)
+        t.start()
+        started.wait(5)
+        time.sleep(0.3)
+        assert t.is_alive() and not done      # blocked while the writer holds it
+    t.join(5)
+    assert not t.is_alive() and done["metrics"]["reviewed"] == 1

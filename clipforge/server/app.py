@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 import shutil
+import sys
 import threading
 import traceback
 import uuid
@@ -39,6 +40,8 @@ from clipforge.review.store import (
 STATIC = Path(__file__).parent / "static"
 
 MAX_STEM_CHARS = 100
+UNREADABLE_VIDEO = ("Could not read this file as a video. Check that it is a "
+                    "complete video with an audio track.")
 
 
 def _clean_filename(raw: str | None) -> str:
@@ -104,6 +107,13 @@ def create_app(workspace: Path, config: PipelineConfig | None = None,
             threading.Thread(target=run_bg, args=(jid,), daemon=True).start()
         return True
 
+    def _check_clip_exists(d: Path, cid: int) -> None:
+        """404 for a clip id the job does not have (once clips exist)."""
+        m = Manifest.load(d)
+        if m.refined_path and (d / m.refined_path).exists() and \
+                all(c.id != cid for c in RefinedSet.load(d / m.refined_path).clips):
+            raise HTTPException(404, "unknown clip")
+
     def _check_trim(d: Path, cid: int, body: ReviewIn) -> None:
         """400 unless the trim lies inside the source and start < end."""
         a, b = body.adjusted_start, body.adjusted_end
@@ -165,7 +175,10 @@ def create_app(workspace: Path, config: PipelineConfig | None = None,
                 m = ingest(tmp, workspace, job_id=jid)
             except IngestError as e:
                 shutil.rmtree(workspace / jid, ignore_errors=True)
-                raise HTTPException(400, str(e))
+                # the full text can hold paths and raw ffprobe output: log it
+                # here, tell the user only the fixed sentence
+                print(f"ingest rejected {name!r}: {e}", file=sys.stderr)
+                raise HTTPException(400, UNREADABLE_VIDEO)
             except Exception:  # noqa: BLE001 — don't leak internals
                 shutil.rmtree(workspace / jid, ignore_errors=True)
                 traceback.print_exc()
@@ -256,6 +269,7 @@ def create_app(workspace: Path, config: PipelineConfig | None = None,
         if body.decision not in ("approved", "rejected"):
             raise HTTPException(400, "decision must be approved|rejected")
         d = job_dir(jid)
+        _check_clip_exists(d, cid)
         _check_trim(d, cid, body)
         upsert_review(d, Review(clip_id=cid, decision=body.decision,
                                 adjusted_start=body.adjusted_start,
@@ -278,6 +292,6 @@ def create_app(workspace: Path, config: PipelineConfig | None = None,
     @app.exception_handler(Exception)
     async def unhandled(request, exc):
         traceback.print_exc()
-        return JSONResponse(status_code=500, content={"detail": str(exc)})
+        return JSONResponse(status_code=500, content={"detail": "Internal error"})
 
     return app

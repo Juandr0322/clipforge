@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -47,11 +48,44 @@ def reviews_path(job_dir: Path) -> Path:
     return Path(job_dir) / "reviews.json"
 
 
+# One re-entrant lock per job directory guards every read and write of
+# reviews.json. Writers need it so load/modify/save is atomic; readers need it
+# too because on Windows a file cannot be replaced while another thread has it
+# open.
+_locks: dict[str, threading.RLock] = {}
+_locks_guard = threading.Lock()
+
+
+def _job_lock(job_dir: Path) -> threading.RLock:
+    key = os.path.abspath(job_dir)
+    with _locks_guard:
+        return _locks.setdefault(key, threading.RLock())
+
+
 def load_reviews(job_dir: Path) -> ReviewSet:
-    p = reviews_path(job_dir)
-    if not p.exists():
-        return ReviewSet()
-    return ReviewSet.model_validate_json(p.read_text())
+    with _job_lock(job_dir):
+        p = reviews_path(job_dir)
+        if not p.exists():
+            return ReviewSet()
+        return ReviewSet.model_validate_json(p.read_text())
+
+
+REPLACE_ATTEMPTS = 5
+REPLACE_PAUSE_SEC = 0.05
+
+
+def _replace_with_retry(tmp: Path, dest: Path) -> None:
+    """tmp.replace(dest), retrying a few times on PermissionError: Windows
+    refuses the rename while another process (an editor, a virus scanner)
+    briefly has the destination open."""
+    for attempt in range(REPLACE_ATTEMPTS):
+        try:
+            tmp.replace(dest)
+            return
+        except PermissionError:
+            if attempt == REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(REPLACE_PAUSE_SEC * (attempt + 1))
 
 
 def save_reviews(job_dir: Path, rs: ReviewSet) -> None:
@@ -62,26 +96,17 @@ def save_reviews(job_dir: Path, rs: ReviewSet) -> None:
     the new content depends on what is already saved."""
     p = reviews_path(job_dir)
     tmp = p.with_name(f"{p.name}.{uuid.uuid4().hex[:8]}.tmp")
-    try:
-        tmp.write_text(rs.model_dump_json(indent=2))
-        tmp.replace(p)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
-
-
-_locks: dict[str, threading.Lock] = {}
-_locks_guard = threading.Lock()
-
-
-def _job_lock(job_dir: Path) -> threading.Lock:
-    key = os.path.abspath(job_dir)
-    with _locks_guard:
-        return _locks.setdefault(key, threading.Lock())
+    with _job_lock(job_dir):
+        try:
+            tmp.write_text(rs.model_dump_json(indent=2))
+            _replace_with_retry(tmp, p)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
 
 
 def upsert_review(job_dir: Path, r: Review) -> ReviewSet:
-    """Load, upsert and save one review under a per-job lock, so concurrent
+    """Load, upsert and save one review under the job lock, so concurrent
     saves for different clips all survive (load/modify/save is not atomic)."""
     with _job_lock(job_dir):
         rs = load_reviews(job_dir)

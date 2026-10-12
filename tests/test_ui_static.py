@@ -138,3 +138,10 @@ def test_phone_layout_rules_exist():
     src = _source()
     assert "@media (max-width:700px)" in src
     assert "flex-direction:column" in src.split("@media (max-width:700px)")[1]
+
+
+def test_upload_has_a_timeout_so_the_queue_cannot_hang():
+    src = _source()
+    assert "xhr.timeout = UPLOAD_TIMEOUT_MS" in src
+    assert "xhr.ontimeout" in src
+    assert int(re.search(r"UPLOAD_TIMEOUT_MS = (\d+) \* 60 \* 1000", src).group(1)) >= 15

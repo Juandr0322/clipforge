@@ -228,6 +228,7 @@ function errText(err) {
 const ACCEPTED_EXT = [".avi", ".m4v", ".mkv", ".mov", ".mp4", ".webm"];
 $("#file").accept = ACCEPTED_EXT.join(",");
 
+const UPLOAD_TIMEOUT_MS = 30 * 60 * 1000;   // whole request, including the server's ingest
 const uploadQueue = [];      // files waiting for their turn (one upload at a time)
 let uploadTotal = 0, uploadDone = 0;
 
@@ -254,6 +255,8 @@ function postFile(file, onPct) {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", "/api/jobs");
     xhr.responseType = "text";
+    xhr.timeout = UPLOAD_TIMEOUT_MS;      // the queue must never wait forever
+    xhr.ontimeout = () => reject(new Error("the upload timed out"));
     xhr.upload.onprogress = e => {
       if (e.lengthComputable && e.total > 0) onPct(Math.min(100, Math.floor(e.loaded * 100 / e.total)));
     };
