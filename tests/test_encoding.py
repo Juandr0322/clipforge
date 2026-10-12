@@ -245,7 +245,10 @@ MOCK_CFG = PipelineConfig(asr_engine="mock", highlight_engine="mock",
 def test_index_served_under_cp1252_defaults(windows_defaults, tmp_path):
     page = (PKG / "server" / "static" / "index.html").read_bytes()
     assert b"\x9d" in page, "test premise: index.html holds byte 0x9D"
-    expected = page.decode("utf-8")
+    # The server reads the page in text mode, which turns CRLF into LF. A CRLF
+    # checkout (Windows, core.autocrlf) is a legitimate input, and HTML doesn't
+    # care, so compare the characters, not the line endings.
+    expected = page.decode("utf-8").replace("\r\n", "\n")
     client = TestClient(create_app(tmp_path, config=MOCK_CFG,
                                    sync_pipeline=True),
                         raise_server_exceptions=False)
@@ -269,7 +272,8 @@ CHILD = textwrap.dedent("""
                                            highlight_engine="mock",
                                            detector="haar"))
     r = TestClient(app, raise_server_exceptions=False).get("/")
-    page = Path(sys.argv[2]).read_bytes().decode("utf-8")
+    # text-mode read in the server turns CRLF into LF; compare characters only
+    page = Path(sys.argv[2]).read_bytes().decode("utf-8").replace("\\r\\n", "\\n")
     assert r.status_code == 200, r.status_code
     assert r.content.decode("utf-8") == page
     print("OK " + enc)
@@ -288,10 +292,15 @@ def test_index_served_in_subprocess_with_non_utf8_locale(tmp_path):
     r = subprocess.run([sys.executable, "-c", CHILD, str(tmp_path), str(page)],
                        cwd=ROOT, env=env, capture_output=True, text=True,
                        encoding="utf-8", errors="replace", timeout=120)
-    if r.returncode == 3:
+    if r.returncode == 3 and sys.platform != "win32":
         pytest.skip("cannot force a non-UTF-8 default encoding here")
+    # On Windows LC_ALL is ignored, but the default text encoding is already a
+    # cp125x code page: there the child must NOT report a UTF-8 default (no
+    # skipping), so the test is meaningful on the platform it exists for.
     assert r.returncode == 0, (r.stdout + r.stderr)[-1500:]
     assert r.stdout.startswith("OK")
+    if sys.platform == "win32":
+        assert r.stdout.split()[1].lower().startswith("cp"), r.stdout
 
 
 # ------------------------------------------------------- round trips
@@ -362,6 +371,7 @@ def test_export_examples_round_trips_non_ascii(windows_defaults, tmp_path):
 
     written = export_examples(job, tmp_path / "examples")
     assert len(written) == 1
+    assert b"\r" not in written[0].read_bytes()     # LF on every OS
     raw = written[0].read_bytes().decode("utf-8")
     assert f"hook='{TEXT}'" in raw
     assert f"reviewer note: {note}" in raw

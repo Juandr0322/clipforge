@@ -195,6 +195,8 @@ def export_examples(job_dir: Path, examples_dir: Path,
         if r.note:
             body += f"reviewer note: {r.note}\n"
         out = examples_dir / f"{m.job_id}_clip{c.id:03d}.txt"
-        out.write_text(body, encoding="utf-8")
+        # newline="\n": text mode would write CRLF on Windows, making the same
+        # example file differ byte-for-byte between machines
+        out.write_text(body, encoding="utf-8", newline="\n")
         written.append(out)
     return written

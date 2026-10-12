@@ -24,10 +24,26 @@ from clipforge.ingest.ingest import parse_probe, probe
 from clipforge.render import render as render_mod
 
 ROOT = Path(clipforge.__file__).parent
-FIXTURE = Path(__file__).parent / "fixtures" / "speech_30s.mp4"
 needs_ffmpeg = pytest.mark.skipif(
     not (shutil.which("ffmpeg") and shutil.which("ffprobe")),
     reason="ffmpeg/ffprobe not installed")
+
+@pytest.fixture(scope="session")
+def speech_30s(tmp_path_factory):
+    """30 s 640x360 test pattern + sine tone, synthesized by ffmpeg (the
+    *.mp4 fixtures are git-ignored, so CI starts without them). Same recipe
+    the other test files use for speech_30s.mp4; kept in a temp dir so it
+    can't race their copies."""
+    out = tmp_path_factory.mktemp("compat") / "speech_30s.mp4"
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", "testsrc=duration=30:size=640x360:rate=30",
+        "-f", "lavfi", "-i", "sine=frequency=300:duration=30",
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-shortest", str(out),
+    ], check=True, capture_output=True)
+    return out
+
 
 # options current ffmpeg rejects ("Unrecognized option") or deprecates
 REMOVED_OPTIONS = {"-vsync", "-async", "-vol", "-psnr", "-top", "-dc",
@@ -125,8 +141,8 @@ def test_parse_probe_reads_each_ffprobe_json(version):
 # ---- parsing: the real ffmpeg on PATH ------------------------------------
 
 @needs_ffmpeg
-def test_real_ffprobe_output_parses():
-    pr = parse_probe(probe(FIXTURE))
+def test_real_ffprobe_output_parses(speech_30s):
+    pr = parse_probe(probe(speech_30s))
     assert (pr.width, pr.height) == (640, 360)
     assert pr.fps == pytest.approx(30.0)
     assert pr.duration == pytest.approx(30.0, abs=0.2)
@@ -134,16 +150,16 @@ def test_real_ffprobe_output_parses():
 
 
 @needs_ffmpeg
-def test_real_loudnorm_output_parses():
-    lufs = render_mod.measure_loudness(FIXTURE)
+def test_real_loudnorm_output_parses(speech_30s):
+    lufs = render_mod.measure_loudness(speech_30s)
     assert -30 < lufs < -10
 
 
 @needs_ffmpeg
-def test_real_ffmpeg_accepts_fps_mode_cfr(tmp_path):
+def test_real_ffmpeg_accepts_fps_mode_cfr(tmp_path, speech_30s):
     out = tmp_path / "o.mp4"
     p = subprocess.run(
-        ["ffmpeg", "-y", "-i", str(FIXTURE), "-t", "1", "-an",
+        ["ffmpeg", "-y", "-i", str(speech_30s), "-t", "1", "-an",
          "-r", "24", "-fps_mode", "cfr", str(out)],
         capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert p.returncode == 0, p.stderr[-300:]
