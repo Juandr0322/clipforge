@@ -94,7 +94,7 @@
         "POST /api/jobs/{id}/rerun while that job is already running returns 409 and starts no second run (test using a pipeline stub that blocks)",
         "Negative or non-integer clip ids on the video/qa/review routes return 404 or 422, never 500 (test)"
       ],
-      "passes": false,
+      "passes": true,
       "notes": "Today Path(file.filename).name turns '..' into '..', and opening that for writing gives a 500. Keep all existing tests in tests/test_server.py passing unchanged."
     },
     {

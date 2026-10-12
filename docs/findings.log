@@ -4,3 +4,6 @@
 2026-10-12 | F02 | reviewer | MINOR | root-cause wording imprecise: only x1 was out of range, filter is otherwise deterministic
 2026-10-12 | F03 | reviewer | QUESTION | find_spec-based mediapipe check missed broken installs (regression vs import check)
 2026-10-12 | F03 | reviewer | MINOR | ARCHITECTURE.md overstated stage 7 reads and idempotency; missing status subcommand
+2026-10-12 | F04 | reviewer | MINOR | traversal tests didn't cover the real hole (%2e%2e to workspace.parent manifest); passed on old code
+2026-10-12 | F04 | reviewer | MINOR | 300-char filename → 500 leaking absolute path
+2026-10-12 | F04 | reviewer | MINOR | non-IngestError ingest failures left job dirs; metrics and CLI ignored the job-id rule
