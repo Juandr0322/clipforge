@@ -31,3 +31,31 @@ jobs:
           CLIPFORGE_HL: mock
           CLIPFORGE_DETECTOR: haar
         run: python -m pytest tests/ -q
+
+  # Diego develops on Windows, where Python's default text encoding is cp1252.
+  # This job keeps that platform honest. ffmpeg comes from Chocolatey; it must
+  # include libass for the caption tests, which the "essentials/full" builds do.
+  test-windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install ffmpeg
+        run: choco install ffmpeg -y
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # No PYTHONUTF8 here on purpose: the default Windows encoding is the point.
+      - name: Run tests (offline, mock engines)
+        env:
+          CLIPFORGE_ASR: mock
+          CLIPFORGE_HL: mock
+          CLIPFORGE_DETECTOR: haar
+        run: python -m pytest tests/test_server.py tests/test_ui_static.py tests/test_encoding.py tests/test_cli_preflight.py -q

@@ -99,12 +99,12 @@ class Manifest(BaseModel):
     def save(self, job_dir: Path) -> None:
         job_dir.mkdir(parents=True, exist_ok=True)
         tmp = self.path_for(job_dir).with_suffix(".json.tmp")
-        tmp.write_text(self.model_dump_json(indent=2))
+        tmp.write_text(self.model_dump_json(indent=2), encoding="utf-8")
         tmp.replace(self.path_for(job_dir))  # atomic write — never a half-written manifest
 
     @classmethod
     def load(cls, job_dir: Path) -> "Manifest":
-        return cls.model_validate_json(cls.path_for(job_dir).read_text())
+        return cls.model_validate_json(cls.path_for(job_dir).read_text(encoding="utf-8"))
 
     # ---------- helpers ----------
     @property

@@ -6,7 +6,10 @@ Usage:
     python -m clipforge.cli status <job-id>    [--workspace DIR]
 """
 import argparse
+import errno
 import json
+import shutil
+import socket
 import sys
 from pathlib import Path
 
@@ -15,6 +18,60 @@ from clipforge.ingest.ingest import IngestError, ingest
 from clipforge.settings import load_env
 
 DEFAULT_WS = Path.home() / "clipforge-workspace"
+
+FFMPEG_FIX = ("Windows: winget install Gyan.FFmpeg, then open a new terminal; "
+              "macOS: brew install ffmpeg; Linux: sudo apt install ffmpeg")
+ADDR_IN_USE = {errno.EADDRINUSE, 10048}      # 10048 = WSAEADDRINUSE
+
+
+def missing_ffmpeg_tools() -> list[str]:
+    """Names of ffmpeg/ffprobe that are not on PATH."""
+    return [t for t in ("ffmpeg", "ffprobe") if shutil.which(t) is None]
+
+
+def ffmpeg_problem() -> str | None:
+    missing = missing_ffmpeg_tools()
+    if not missing:
+        return None
+    return (f"{' and '.join(missing)} not found on PATH. Install it: "
+            f"{FFMPEG_FIX}")
+
+
+def port_problem(host: str, port: int) -> str | None:
+    """Try to bind host:port and close again; return a message if we can't."""
+    try:
+        # every address the host name resolves to (localhost -> ::1 and
+        # 127.0.0.1), so a server on either one is noticed
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except OSError as e:
+        return f"Cannot listen on {host}:{port}: {e.strerror or e}"
+    usable, failure = 0, None
+    for family, socktype, proto, _canon, addr in infos:
+        try:
+            s = socket.socket(family, socktype, proto)
+        except OSError as e:
+            failure = failure or e
+            continue
+        try:
+            if sys.platform != "win32":
+                # like uvicorn: a lingering TIME_WAIT must not count as busy.
+                # Never on Windows, where it would let us steal a live port.
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(addr)
+            usable += 1
+        except OSError as e:
+            if e.errno in ADDR_IN_USE:
+                return (f"Port {port} is already in use — another ClipForge "
+                        "server may still be running. Close it, or start on "
+                        "another port: python -m clipforge.cli serve "
+                        f"--port {port + 1}")
+            failure = failure or e
+        finally:
+            s.close()
+    # an unusable secondary address (e.g. no IPv6) is fine; none usable is not
+    if not usable and failure is not None:
+        return f"Cannot listen on {host}:{port}: {failure.strerror or failure}"
+    return None
 
 
 def main() -> int:
@@ -90,6 +147,10 @@ def main() -> int:
                   "letters, digits, '-' and '_', starting with a letter or "
                   "digit (other ids are invisible to the review website)",
                   file=sys.stderr)
+            return 2
+        problem = ffmpeg_problem()
+        if problem:
+            print(f"INGEST FAILED: {problem}", file=sys.stderr)
             return 2
         try:
             m = ingest(args.video, args.workspace,
@@ -217,12 +278,25 @@ def main() -> int:
         return 0
 
     if args.cmd == "pipeline":
+        problem = ffmpeg_problem()
+        if problem:
+            print(f"PIPELINE FAILED: {problem}", file=sys.stderr)
+            return 2
         from clipforge.pipeline import PipelineConfig, run_pipeline
         m = run_pipeline(Path(args.workspace) / args.job_id, PipelineConfig())
         print(f"job {m.job_id} -> {m.stage.value}")
         return 0
 
     if args.cmd == "serve":
+        problem = port_problem(args.host, args.port)
+        if problem:
+            print(problem, file=sys.stderr)
+            return 2
+        warning = ffmpeg_problem()
+        if warning:
+            print(f"WARNING: {warning}\n"
+                  "The review page will load, but uploads and rendering "
+                  "will fail until it is installed.", file=sys.stderr)
         import uvicorn
         from clipforge.server.app import create_app
         app = create_app(Path(args.workspace))
