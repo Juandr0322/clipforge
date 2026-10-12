@@ -135,7 +135,7 @@
         "Sort by score (high to low) and by time reorders the cards. The chosen filter and sort survive a background refresh and a page reload",
         "For a clip whose start is S, pausing its video at 3.0 s and clicking 'set start' (or pressing [) puts S+3.0 in the start field, in absolute source seconds. ']' does the same for end. Saving stores those values, and the job's avg-trim metric changes (Playwright + GET /api/jobs/{id})"
       ],
-      "passes": false,
+      "passes": true,
       "notes": "Trim fields stay in absolute source seconds, the unit the API and review store's metrics use. Keep the shortcut list in the help panel and in the page source in sync."
     },
     {
@@ -145,7 +145,8 @@
       "area": [
         "clipforge/server/static/index.html",
         "tests/test_ui_static.py",
-        "clipforge/server/app.py"
+        "clipforge/server/app.py",
+        "clipforge/review/store.py"
       ],
       "depends_on": [
         "F06"
@@ -157,10 +158,12 @@
         "A server-side rejection (e.g. 'junk.mp4' containing text) shows the server's 400 message inline, and the upload zone returns to its normal state",
         "Dropping two video files uploads both, one after the other, and two jobs appear",
         "While a 90 s video is uploading/ingesting, GET /api/jobs still answers in under 1 s (the upload route must not block the event loop) (test)",
-        "At a 390px-wide viewport the page is usable: job list and clip detail stack or toggle instead of side by side, clip cards fit the width, and approve/reject are visible without horizontal scrolling (Playwright)"
+        "At a 390px-wide viewport the page is usable: job list and clip detail stack or toggle instead of side by side, clip cards fit the width, and approve/reject are visible without horizontal scrolling (Playwright)",
+        "8 simultaneous POST /api/jobs/{id}/clips/{n}/review requests for different clips all return 200 and all 8 reviews are persisted; none returns 500 (test with threads)",
+        "Review trim values outside [0, source duration] or with start >= end return 400 and store nothing (test)"
       ],
       "passes": false,
-      "notes": " Added after F05 testing: POST /api/jobs is async def but runs blocking ingest on the event loop, stalling all requests ~12 s; and there is no mobile layout (390px makes #detail 100px wide)."
+      "notes": " Added after F05 testing: POST /api/jobs is async def but runs blocking ingest on the event loop, stalling all requests ~12 s; and there is no mobile layout (390px makes #detail 100px wide). Added after F06 testing: load_reviews/upsert/save_reviews are unlocked and share one reviews.json.tmp, so concurrent saves lose updates or 500 (FileNotFoundError on rename). Use a per-job lock in the server and a unique temp file per write."
     },
     {
       "id": "F08",

@@ -11,3 +11,6 @@
 2026-10-12 | F05 | reviewer | MINOR | polling could get stuck on (render error) or off (failed first load); no retry after partial refresh failure
 2026-10-12 | F05 | tester | LOW | upload route async def runs blocking ingest on event loop → all API calls stall ~12 s
 2026-10-12 | F05 | tester | LOW | no phone layout: at 390px clip cards overflow and approve/reject are off-screen
+2026-10-12 | F06 | reviewer | MINOR | selection jumped to first clip when a refresh removed the selected card (next A could hit an unseen clip)
+2026-10-12 | F06 | tester | HIGH | concurrent review POSTs lose updates / 500: unlocked read-modify-write + shared reviews.json.tmp
+2026-10-12 | F06 | tester | MINOR | API accepts trim values like -5 and 99999
