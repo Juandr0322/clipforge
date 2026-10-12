@@ -98,6 +98,28 @@
   .toast.ok  { border-left-color:var(--good); }
   .toast.err { border-left-color:var(--bad); color:var(--bad); }
   .toast.info { border-left-color:var(--accent); }
+  .toolbar { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:14px; font-size:12px; color:var(--dim); }
+  .filters { display:flex; gap:6px; flex-wrap:wrap; }
+  .filters button { padding:6px 10px; font-size:11px; border-radius:20px; }
+  .filters button.on { border-color:var(--accent); color:var(--accent); }
+  .toolbar select {
+    background:var(--panel2); border:1px solid var(--line); color:var(--text);
+    font-family:inherit; font-size:11px; padding:5px 6px; border-radius:5px;
+  }
+  .clip.sel { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
+  .trim { flex-wrap:wrap; }
+  .trim button { padding:4px 8px; font-size:11px; }
+  .nomatch { color:var(--dim); margin:24px 0; text-align:center; }
+  #help {
+    position:fixed; top:64px; right:20px; z-index:20; width:min(340px,calc(100vw - 40px));
+    background:var(--panel2); border:1px solid var(--accent); border-radius:8px;
+    padding:14px 16px; box-shadow:0 8px 28px rgba(0,0,0,.5); font-size:12px;
+  }
+  #help h2 { font-size:13px; color:var(--accent); margin-bottom:10px; }
+  #help dl { display:grid; grid-template-columns:auto 1fr; gap:6px 14px; }
+  #help dt { color:var(--accent); font-weight:bold; white-space:nowrap; }
+  #help dd { margin:0; color:var(--text); }
+  #help p { color:var(--dim); margin:10px 0; line-height:1.5; }
 </style>
 </head>
 <body>
@@ -105,6 +127,7 @@
   <h1>CLIPFORGE</h1>
   <span id="jobcount"></span>
   <span class="metrics" id="globalmetrics"></span>
+  <button type="button" id="helpbtn" aria-expanded="false" aria-controls="help">? shortcuts</button>
 </header>
 <main>
   <div id="sidebar">
@@ -114,6 +137,7 @@
   </div>
   <div id="detail"><div class="empty">select or upload a video →</div></div>
 </main>
+<div id="help" role="dialog" aria-label="Keyboard shortcuts" hidden></div>
 <div id="toasts" aria-live="polite"></div>
 <script>
 "use strict";
@@ -148,8 +172,12 @@ function toast(msg, kind = "ok") {
   setTimeout(() => t.remove(), kind === "err" ? 7000 : 3000);
 }
 
+class Unreachable extends Error {}
+
 async function api(path, opts) {
-  const r = await fetch(path, opts);
+  let r;
+  try { r = await fetch(path, opts); }
+  catch (_) { throw new Unreachable("could not reach the server"); }
   if (!r.ok) {
     let detail = r.statusText || ("HTTP " + r.status);
     try {
@@ -163,8 +191,8 @@ async function api(path, opts) {
 }
 
 function errText(err) {
-  // fetch() rejects with TypeError when the server is unreachable
-  return err instanceof TypeError ? "could not reach the server" : err.message;
+  // only a failed fetch() means "unreachable"; a bug in this page must show up as itself
+  return err.message;
 }
 
 // ---------- upload ----------
@@ -200,6 +228,7 @@ $("#file").addEventListener("change", async e => {
 // Polling runs only while some job reports running:true. refresh() decides
 // after every pass whether to schedule the next one.
 let pollTimer = null, refreshing = false, refreshAgain = false;
+let passStartedAt = 0;       // when the refresh pass now in flight began
 let wasPolling = false;      // the last successful job list had a running job
 let retriedAfterFail = false, lastRefreshAt = 0, offline = false;
 const RETRY_MS = 3000;
@@ -207,6 +236,7 @@ const RETRY_MS = 3000;
 async function refresh() {
   if (refreshing) { refreshAgain = true; return; }
   refreshing = true;
+  passStartedAt = Date.now();
   clearTimeout(pollTimer); pollTimer = null;
   let delay = null;            // ms until the next automatic refresh, if any
   let failure = null;
@@ -295,14 +325,16 @@ function openJob(id) {
   currentJob = id;
   // Drop the previous job's pane right now: until the new job's detail has
   // loaded nothing on screen may be clickable against the wrong job.
-  D = null; cards.clear();
+  D = null; cards.clear(); order = []; selected = null;
   $("#detail").replaceChildren(h("div", {class: "empty", text: "loading…"}));
   for (const [jid, e] of jobEls) e.el.classList.toggle("active", jid === id);
   refresh();
 }
 $("#joblist").addEventListener("click", e => {
   const el = e.target.closest(".job");
-  if (el) openJob(el.dataset.job);
+  if (!el) return;
+  openJob(el.dataset.job);
+  el.blur();            // after a mouse click, Space and the letter keys belong to the clips
 });
 $("#joblist").addEventListener("keydown", e => {
   if (e.key !== "Enter" && e.key !== " ") return;
@@ -313,6 +345,28 @@ $("#joblist").addEventListener("keydown", e => {
 // ---------- detail pane (skeleton built once per job, then updated in place) ----------
 let D = null;                // refs to the current job's skeleton
 const cards = new Map();     // clip id -> card refs
+let order = [];              // clip ids in the order the cards are laid out
+let selected = null;         // clip id the keyboard shortcuts act on
+
+// ---------- view preferences (filter + sort), kept across reloads ----------
+const PREFS_KEY = "clipforge.view";
+const FILTERS = ["all", "unreviewed", "approved", "rejected"];
+const SORTS = {
+  score: {label: "score (high → low)",
+          cmp: (a, b) => (b.scoreNum - a.scoreNum) || (a.start - b.start) || (a.id - b.id)},
+  time:  {label: "time in source",
+          cmp: (a, b) => (a.start - b.start) || (a.id - b.id)},
+};
+const view = {filter: "all", sort: "score"};
+try {
+  const p = JSON.parse(localStorage.getItem(PREFS_KEY) || "null");
+  if (p && FILTERS.includes(p.filter)) view.filter = p.filter;
+  if (p && Object.hasOwn(SORTS, p.sort)) view.sort = p.sort;
+} catch (_) { /* storage blocked or corrupt: keep the defaults */ }
+function savePrefs() {
+  try { localStorage.setItem(PREFS_KEY, JSON.stringify(view)); }
+  catch (_) { /* storage blocked: the choice just lasts until reload */ }
+}
 
 function buildSkeleton(jobId) {
   const stagebar = h("div", {class: "stagebar"}, ...STAGES.map(s => h("span", {text: s})));
@@ -324,11 +378,20 @@ function buildSkeleton(jobId) {
   const exportBtn = h("button", {type: "button", "data-act": "export", "data-job": jobId,
                                  text: "export approved → few-shot examples"});
   const exportbar = h("div", {id: "exportbar", hidden: ""}, exportText, exportBtn);
+  const filterBtns = new Map(FILTERS.map(f =>
+    [f, h("button", {type: "button", "data-filter": f, "aria-pressed": "false"})]));
+  const sortSel = h("select", {"aria-label": "sort clips", "data-sort": ""},
+    ...Object.entries(SORTS).map(([v, s]) => h("option", {value: v, text: s.label})));
+  const toolbar = h("div", {class: "toolbar", hidden: ""},
+    h("div", {class: "filters", role: "group", "aria-label": "filter clips"}, ...filterBtns.values()),
+    h("label", {}, "sort ", sortSel));
   const grid = h("div", {class: "clipgrid", hidden: ""});
+  const nomatch = h("div", {class: "nomatch", hidden: "", text: "no clips match this filter"});
   const empty = h("div", {class: "empty", hidden: "", text: "pipeline found no strong clips in this video"});
-  $("#detail").replaceChildren(stagebar, status, exportbar, grid, empty);
-  cards.clear();
-  D = {jobId, stagebar, status, statusText, retry, exportText, exportbar, grid, empty};
+  $("#detail").replaceChildren(stagebar, status, exportbar, toolbar, grid, nomatch, empty);
+  cards.clear(); order = []; selected = null;
+  D = {jobId, stagebar, status, statusText, retry, exportText, exportbar, toolbar,
+       filterBtns, sortSel, grid, nomatch, empty};
 }
 
 async function renderDetail(jobId) {
@@ -359,7 +422,7 @@ async function renderDetail(jobId) {
   }
 
   const hasClips = j.clips.length > 0;
-  D.exportbar.hidden = D.grid.hidden = !hasClips;
+  D.exportbar.hidden = D.toolbar.hidden = D.grid.hidden = !hasClips;
   D.empty.hidden = hasClips || j.stage !== "rendered";
   if (hasClips) {
     const m = j.metrics;
@@ -373,17 +436,97 @@ async function renderDetail(jobId) {
 
 function syncClips(j) {
   const seen = new Set();
-  let prev = null;
   for (const c of j.clips) {
     seen.add(c.id);
     let card = cards.get(c.id);
     if (!card) { card = buildCard(c.id, j.job_id); cards.set(c.id, card); }
     updateCard(card, c, j.job_id);
-    const want = prev ? prev.nextSibling : D.grid.firstChild;
-    if (want !== card.el) D.grid.insertBefore(card.el, want);   // no-op when order is unchanged
-    prev = card.el;
   }
   for (const [id, card] of cards) if (!seen.has(id)) { card.el.remove(); cards.delete(id); }
+  layout();
+  applyView();
+}
+
+// Put the cards in the chosen sort order. Cards already in place are not
+// touched, so a refresh never moves a playing video.
+function layout() {
+  const list = [...cards.values()].sort(SORTS[view.sort].cmp);
+  order = list.map(c => c.id);
+  let prev = null;
+  for (const card of list) {
+    const want = prev ? prev.nextSibling : D.grid.firstChild;
+    if (want !== card.el) D.grid.insertBefore(card.el, want);
+    prev = card.el;
+  }
+}
+
+// Show only the cards that pass the filter, refresh the counts, and keep a
+// visible clip selected.
+function applyView() {
+  if (!D) return;
+  const decisionOf = c => c.decision || "unreviewed";
+  const counts = {all: cards.size, unreviewed: 0, approved: 0, rejected: 0};
+  for (const c of cards.values()) counts[decisionOf(c)]++;
+  for (const [f, b] of D.filterBtns) {
+    b.textContent = `${f} (${counts[f]})`;
+    b.dataset.count = counts[f];
+    b.setAttribute("aria-pressed", f === view.filter ? "true" : "false");
+    b.classList.toggle("on", f === view.filter);
+  }
+  D.sortSel.value = view.sort;
+  for (const c of cards.values()) {
+    const show = view.filter === "all" || decisionOf(c) === view.filter;
+    if (!show && !c.el.hidden && c.video) c.video.pause();
+    c.el.hidden = !show;
+  }
+  D.nomatch.hidden = !cards.size || counts[view.filter] > 0;
+  ensureSelection();
+}
+
+// ---------- selection ----------
+function visibleIds() {
+  return order.filter(id => cards.has(id) && !cards.get(id).el.hidden);
+}
+function selectedCard() { return selected === null ? null : cards.get(selected) || null; }
+
+function select(id, scroll) {
+  if (id !== selected) {
+    const prev = selectedCard();
+    if (prev && prev.video) prev.video.pause();     // never leave a clip playing off-selection
+    selected = id;
+  }
+  for (const c of cards.values()) {
+    const on = c.id === selected;
+    c.el.classList.toggle("sel", on);
+    if (on) c.el.setAttribute("aria-current", "true"); else c.el.removeAttribute("aria-current");
+  }
+  const card = selectedCard();
+  if (scroll && card) card.el.scrollIntoView({block: "nearest"});
+}
+
+// Keep the selection on a visible card. When the selected card has just left
+// the view (approved under "unreviewed", filter changed) move to the next
+// visible one after it, else the nearest one before it.
+function ensureSelection() {
+  const vis = visibleIds();
+  if (selected !== null && vis.includes(selected)) { select(selected, false); return; }
+  let next = null;
+  if (selected !== null) {
+    const i = order.indexOf(selected);
+    next = order.slice(i + 1).find(id => vis.includes(id));
+    if (next === undefined) next = order.slice(0, Math.max(i, 0)).reverse().find(id => vis.includes(id));
+    if (next === undefined) next = null;
+  }
+  if (next === null && vis.length) next = vis[0];
+  select(next, true);
+}
+
+function move(delta) {
+  const vis = visibleIds();
+  if (!vis.length) return;
+  const i = vis.indexOf(selected);
+  const next = i < 0 ? vis[0] : vis[Math.min(vis.length - 1, Math.max(0, i + delta))];
+  select(next, true);
 }
 
 function buildCard(id, jobId) {
@@ -398,13 +541,16 @@ function buildCard(id, jobId) {
   const qaWrap = h("span", {hidden: ""}, " · ", qa);
   const meta = h("div", {class: "meta"}, score, info, h("br"), reason, qaWrap);
   const ts = field("start", "start"), te = field("end", "end"), tn = field("note", "note", "note");
+  const setBtn = (act, text, title) => h("button", {type: "button", "data-act": act, text, title});
   const approve = h("button", {type: "button", class: "approve", "data-act": "approved", text: "✓ approve"});
   const reject = h("button", {type: "button", class: "reject", "data-act": "rejected", text: "✗ reject"});
   const el = h("div", {class: "clip", "data-clip": id, "data-job": jobId},
     slot, hook, meta,
-    h("div", {class: "trim"}, "trim: ", ts, te, tn),
+    h("div", {class: "trim"}, "trim: ",
+      ts, setBtn("setstart", "set start", "use the video's current time ( [ )"),
+      te, setBtn("setend", "set end", "use the video's current time ( ] )"), tn),
     h("div", {class: "btnrow"}, approve, reject));
-  return {id, jobId, el, slot, video: null, hook, score, info, reason, qa, qaWrap, ts, te, tn, approve, reject};
+  return {id, jobId, el, slot, video: null, srcStart: 0, scoreNum: 0, start: 0, decision: null, localAt: 0, hook, score, info, reason, qa, qaWrap, ts, te, tn, approve, reject};
 }
 
 // Fill a field from the server unless the reviewer is editing it.
@@ -415,8 +561,19 @@ function setField(input, value) {
   if (input.value !== v) input.value = v;
 }
 
+// Show a decision on a card. The server's answer wins, except that one which
+// was already on its way when the reviewer decided locally (see review()).
+function setDecision(card, decision) {
+  card.decision = decision;
+  card.approve.classList.toggle("on", decision === "approved");
+  card.reject.classList.toggle("on", decision === "rejected");
+}
+
 function updateCard(card, c, jobId) {
   const r = c.review;
+  card.scoreNum = c.score;
+  card.start = c.start;      // the rendered video begins at this source time
+  card.srcStart = c.start;
   card.hook.textContent = `“${c.hook}”`;
   card.score.textContent = "score " + c.score;
   card.info.textContent = ` · ${c.type} · ${c.duration}s · ${c.start.toFixed(1)}s → ${c.end.toFixed(1)}s`;
@@ -436,8 +593,7 @@ function updateCard(card, c, jobId) {
   setField(card.ts, r?.adjusted_start);
   setField(card.te, r?.adjusted_end);
   setField(card.tn, r?.note);
-  card.approve.classList.toggle("on", r?.decision === "approved");
-  card.reject.classList.toggle("on", r?.decision === "rejected");
+  if (!(card.localAt > passStartedAt)) setDecision(card, r ? r.decision : null);
 }
 
 // remember which fields the reviewer has typed into, so polling never overwrites them
@@ -450,7 +606,24 @@ $("#detail").addEventListener("focusout", e => {
   if (t.dataset && t.dataset.dirty === "1" && t.value === t.dataset.server) delete t.dataset.dirty;
 });
 
+// A mouse click leaves focus on the button it hit, where Space would press the
+// same button again. detail is 0 for keyboard-made clicks, which keep focus.
+function dropFocusAfterMouse(e, el) { if (e.detail > 0) el.blur(); }
+
 $("#detail").addEventListener("click", e => {
+  const clipEl = e.target.closest(".clip");
+  if (clipEl) {
+    const card = cards.get(Number(clipEl.dataset.clip));
+    if (card && card.el === clipEl) select(card.id, false);
+  }
+  const flt = e.target.closest("button[data-filter]");
+  if (flt) {
+    view.filter = flt.dataset.filter;
+    savePrefs();
+    applyView();
+    dropFocusAfterMouse(e, flt);
+    return;
+  }
   const btn = e.target.closest("button[data-act]");
   if (!btn || btn.disabled) return;
   const act = btn.dataset.act;
@@ -462,8 +635,25 @@ $("#detail").addEventListener("click", e => {
   else if (act === "export") exportExamples(btn.dataset.job);
   else {
     const el = btn.closest(".clip");
-    if (el) review(el.dataset.job, Number(el.dataset.clip), act);
+    if (!el) return;
+    if (act === "approved" || act === "rejected") review(el.dataset.job, Number(el.dataset.clip), act);
+    else if (act === "setstart" || act === "setend") {
+      const card = cards.get(Number(el.dataset.clip));
+      if (card && card.el === el) setTrimFromPlayhead(card, act === "setstart" ? "start" : "end");
+    }
+    dropFocusAfterMouse(e, btn);
   }
+});
+$("#detail").addEventListener("change", e => {
+  if (!e.target.matches("select[data-sort]")) return;
+  if (!Object.hasOwn(SORTS, e.target.value)) return;
+  view.sort = e.target.value;
+  savePrefs();
+  layout();
+  applyView();
+  const card = selectedCard();
+  if (card) card.el.scrollIntoView({block: "nearest"});
+  e.target.blur();                    // so the arrow keys go back to selecting clips
 });
 
 // ---------- actions ----------
@@ -479,6 +669,10 @@ async function review(jobId, cid, decision) {
     toast("trim start/end must be numbers", "err");
     return;
   }
+  if (start !== null && end !== null && start >= end) {
+    toast("trim start must be before trim end", "err");
+    return;
+  }
   const sent = {ts: card.ts.value, te: card.te.value, tn: card.tn.value};
   card.saving = true;
   card.approve.disabled = card.reject.disabled = true;
@@ -492,6 +686,11 @@ async function review(jobId, cid, decision) {
       if (card[k].value === sent[k]) { delete card[k].dataset.dirty; card[k].dataset.server = sent[k]; }
     }
     toast(`clip ${cid + 1} ${decision} · saved`, "ok");
+    // show it now (the filter, counts and selection follow) instead of
+    // waiting for the next refresh to come back
+    card.localAt = Date.now();
+    setDecision(card, decision);
+    if (cards.get(cid) === card) applyView();
     refresh();
   } catch (err) {
     toast("save failed: " + errText(err), "err");
@@ -499,6 +698,78 @@ async function review(jobId, cid, decision) {
   card.saving = false;
   card.approve.disabled = card.reject.disabled = false;
 }
+
+// Trim fields are absolute source seconds. The rendered clip starts at the
+// clip's source start, so the playhead at t seconds is source time start + t.
+function fmtSec(x) { return String(Number(x.toFixed(3))); }
+
+function setTrimFromPlayhead(card, which) {
+  const v = card.video;
+  if (!v || v.readyState < 1) { toast("the video is not loaded yet", "err"); return; }
+  const input = which === "start" ? card.ts : card.te;
+  input.value = fmtSec(card.srcStart + v.currentTime);
+  input.dataset.dirty = "1";               // polling must not overwrite it
+}
+
+function decideSelected(decision) {
+  const card = selectedCard();
+  if (card) review(card.jobId, card.id, decision);
+}
+function togglePlaySelected() {
+  const v = selectedCard()?.video;
+  if (!v) return;
+  if (v.paused) v.play().catch(() => {}); else v.pause();
+}
+function trimSelected(which) {
+  const card = selectedCard();
+  if (card) setTrimFromPlayhead(card, which);
+}
+
+// ---------- keyboard shortcuts ----------
+// One table drives both the key handler and the help panel, so they cannot
+// drift apart. `repeat: true` marks keys that may auto-repeat when held.
+const SHORTCUTS = [
+  {keys: ["a"], label: "A", desc: "approve the selected clip", run: () => decideSelected("approved")},
+  {keys: ["r"], label: "R", desc: "reject the selected clip", run: () => decideSelected("rejected")},
+  {keys: [" "], label: "Space", desc: "play / pause the selected clip", run: togglePlaySelected},
+  {keys: ["j", "ArrowDown"], label: "J or Down", desc: "select the next clip", repeat: true, run: () => move(1)},
+  {keys: ["k", "ArrowUp"], label: "K or Up", desc: "select the previous clip", repeat: true, run: () => move(-1)},
+  {keys: ["["], label: "[", desc: "set trim start from the video's current time", run: () => trimSelected("start")},
+  {keys: ["]"], label: "]", desc: "set trim end from the video's current time", run: () => trimSelected("end")},
+  {keys: ["?"], label: "?", desc: "show or hide this help", run: () => toggleHelp()},
+  {keys: ["Escape"], label: "Esc", desc: "close this help", run: () => toggleHelp(false)},
+];
+const KEYMAP = new Map();
+for (const s of SHORTCUTS) for (const k of s.keys) KEYMAP.set(k, s);
+
+function toggleHelp(open) {
+  const panel = $("#help");
+  const show = open === undefined ? panel.hidden : open;
+  panel.hidden = !show;
+  $("#helpbtn").setAttribute("aria-expanded", show ? "true" : "false");
+}
+$("#help").append(
+  h("h2", {text: "Keyboard shortcuts"}),
+  h("dl", {}, ...SHORTCUTS.flatMap(s => [h("dt", {text: s.label}), h("dd", {text: s.desc})])),
+  h("p", {text: "Shortcuts pause while the cursor is in a field. Trim values are absolute seconds in the source video."}),
+  h("button", {type: "button", id: "helpclose", text: "close"}));
+$("#helpbtn").addEventListener("click", () => toggleHelp());
+$("#helpclose").addEventListener("click", () => toggleHelp(false));
+
+document.addEventListener("keydown", e => {
+  if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;
+  const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  const s = KEYMAP.get(key);
+  if (!s || (e.repeat && !s.repeat)) return;
+  const t = e.target;
+  // never while typing, and not where the browser already gives the key a job
+  if (t.closest && t.closest("input, textarea, select, [contenteditable]")) return;
+  if (t.isContentEditable) return;
+  if (key === " " && t.closest && t.closest("button, a[href], video, [role=button]")) return;
+  if ((key === "ArrowUp" || key === "ArrowDown") && t.closest && t.closest("video")) return;
+  e.preventDefault();
+  s.run();
+});
 
 async function rerun(jobId) {
   try {
