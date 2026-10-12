@@ -103,6 +103,145 @@ def test_serve_without_ffmpeg_warns_but_starts(tmp_path, monkeypatch, capsys,
     assert f"ClipForge running at http://127.0.0.1:{port}" in out
 
 
+# ------------------------------------------------------- ffmpeg version
+
+BANNERS = {
+    "ffmpeg version 6.1.1-3ubuntu5 Copyright (c) 2000-2023": ("6.1.1-3ubuntu5", (6, 1)),
+    "ffmpeg version 8.0 Copyright (c) 2000-2025": ("8.0", (8, 0)),
+    "ffmpeg version n7.1.2 Copyright (c) 2000-2025": ("n7.1.2", (7, 1)),
+    "ffmpeg version 5.1 Copyright": ("5.1", (5, 1)),
+    "ffmpeg version 4.4.2-0ubuntu0.22.04.1 Copyright": ("4.4.2-0ubuntu0.22.04.1", (4, 4)),
+    "ffmpeg version 5.0.3-static https://johnvansickle.com": ("5.0.3-static", (5, 0)),
+    # git builds carry no release number and count as current
+    "ffmpeg version N-127388-g615b07170e-20261012 Copyright": ("N-127388-g615b07170e-20261012", None),
+    "ffmpeg version 2024-05-13-git-37db0454e4-full_build-www.gyan.dev": ("2024-05-13-git-37db0454e4-full_build-www.gyan.dev", None),
+    "something else entirely": ("unknown", None),
+}
+
+
+@pytest.mark.parametrize("banner", BANNERS)
+def test_parse_ffmpeg_version(banner):
+    assert cli.parse_ffmpeg_version(banner) == BANNERS[banner]
+
+
+@pytest.fixture(autouse=True)
+def fresh_version_cache():
+    cli.ffmpeg_version.cache_clear()
+    yield
+    cli.ffmpeg_version.cache_clear()
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("2024-05-13-git-37db0454e4-full_build-www.gyan.dev", (2024, 5, 13)),
+    ("N-127388-g615b07170e-20261012", (2026, 10, 12)),
+    ("N-127388-g615b07170e", None), ("6.1.1-3ubuntu5", None),
+    ("N-1-gabc-20261399", None)])
+def test_ffmpeg_build_date(text, expected):
+    got = cli.ffmpeg_build_date(text)
+    assert (got and (got.year, got.month, got.day)) == (expected or None)
+
+
+@pytest.mark.parametrize("banner,refused", [
+    ("ffmpeg version 2022-06-30-git-aaaaaaaaaa-full_build-www.gyan.dev", True),
+    ("ffmpeg version N-106000-gabcdef1234-20220101", True),
+    ("ffmpeg version 2022-07-01-git-aaaaaaaaaa-essentials_build", False),
+    ("ffmpeg version N-127388-g615b07170e-20261012", False),
+    ("ffmpeg version N-127388-g615b07170e", False)])   # undated: allowed
+def test_git_builds_judged_by_build_date(monkeypatch, banner, refused):
+    fake_version(monkeypatch, banner)
+    msg = cli.ffmpeg_problem()
+    assert bool(msg) is refused
+    if refused:
+        assert "too old" in msg and "5.1 or newer" in msg
+
+
+def test_ffmpeg_version_runs_ffmpeg_once_per_command(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **k):
+        calls.append(cmd)
+        return cli.subprocess.CompletedProcess(
+            cmd, 0, "ffmpeg version 8.0 Copyright\nmore\n", "")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli.shutil, "which", lambda n, *a, **k: f"/bin/{n}")
+    assert cli.ffmpeg_problem() is None
+    cli.report_ffmpeg()
+    cli.ffmpeg_version()
+    assert calls == [["ffmpeg", "-version"]]
+
+
+def fake_version(monkeypatch, banner):
+    monkeypatch.setattr(cli.shutil, "which", lambda n, *a, **k: f"/bin/{n}")
+    cli.ffmpeg_version.cache_clear()
+    monkeypatch.setattr(cli, "ffmpeg_version",
+                        lambda: cli.parse_ffmpeg_version(banner))
+
+
+@pytest.mark.parametrize("banner", [
+    "ffmpeg version 5.0.3 Copyright", "ffmpeg version 4.4.2-0ubuntu Copyright"])
+def test_ffmpeg_older_than_5_1_is_refused_with_clear_message(monkeypatch, banner):
+    fake_version(monkeypatch, banner)
+    msg = cli.ffmpeg_problem()
+    assert "too old" in msg and "5.1 or newer" in msg
+    assert banner.split()[2] in msg and "winget install Gyan.FFmpeg" in msg
+
+
+@pytest.mark.parametrize("banner", [
+    "ffmpeg version 5.1 Copyright", "ffmpeg version 6.1.1-3ubuntu5 Copyright",
+    "ffmpeg version 8.0 Copyright", "ffmpeg version N-127388-g615b07170e Copyright",
+    "ffmpeg version 2024-05-13-git-37db0454e4-full_build Copyright"])
+def test_ffmpeg_5_1_and_newer_and_git_builds_accepted(monkeypatch, banner):
+    fake_version(monkeypatch, banner)
+    assert cli.ffmpeg_problem() is None
+
+
+def test_ingest_with_old_ffmpeg_exits_2_cleanly(tmp_path, monkeypatch, capsys):
+    fake_version(monkeypatch, "ffmpeg version 4.4.2 Copyright")
+    called = []
+    monkeypatch.setattr(cli, "ingest", lambda *a, **k: called.append(1))
+    rc = run_cli(monkeypatch, "ingest", "v.mp4", "--workspace", str(tmp_path))
+    err = capsys.readouterr().err
+    assert rc == 2 and not called
+    assert "INGEST FAILED" in err and "ffmpeg 4.4.2 is too old" in err
+    assert "Traceback" not in err
+
+
+def test_ingest_prints_detected_ffmpeg_version(tmp_path, monkeypatch, capsys):
+    fake_version(monkeypatch, "ffmpeg version 8.0 Copyright")
+    monkeypatch.setattr(cli, "ingest", lambda *a, **k: (_ for _ in ()).throw(
+        cli.IngestError("stop here")))
+    run_cli(monkeypatch, "ingest", "v.mp4", "--workspace", str(tmp_path))
+    assert "ffmpeg: 8.0" in capsys.readouterr().err
+
+
+def test_serve_prints_detected_ffmpeg_version(tmp_path, monkeypatch, capsys,
+                                              uvicorn_calls):
+    fake_version(monkeypatch, "ffmpeg version 6.1.1-3ubuntu5 Copyright")
+    rc = run_cli(monkeypatch, "serve", "--workspace", str(tmp_path),
+                 "--port", str(free_port()))
+    assert rc == 0 and "ffmpeg: 6.1.1-3ubuntu5" in capsys.readouterr().err
+
+
+def test_serve_with_old_ffmpeg_warns_but_starts(tmp_path, monkeypatch, capsys,
+                                                uvicorn_calls):
+    fake_version(monkeypatch, "ffmpeg version 4.4.2 Copyright")
+    rc = run_cli(monkeypatch, "serve", "--workspace", str(tmp_path),
+                 "--port", str(free_port()))
+    err = capsys.readouterr().err
+    assert rc == 0 and len(uvicorn_calls) == 1
+    assert "WARNING" in err and "too old" in err
+
+
+def test_real_ffmpeg_is_detected_and_accepted():
+    if cli.missing_ffmpeg_tools():
+        pytest.skip("ffmpeg/ffprobe not installed")
+    text, ver = cli.ffmpeg_version()
+    assert text != "unknown"
+    assert ver is None or ver >= cli.MIN_FFMPEG
+    assert cli.ffmpeg_problem() is None
+
+
 # --------------------------------------------------------------- port
 
 def test_serve_with_busy_port_exits_2_before_starting(tmp_path, monkeypatch,

@@ -6,10 +6,14 @@ Usage:
     python -m clipforge.cli status <job-id>    [--workspace DIR]
 """
 import argparse
+import datetime
 import errno
+import functools
 import json
+import re
 import shutil
 import socket
+import subprocess
 import sys
 from pathlib import Path
 
@@ -29,12 +33,76 @@ def missing_ffmpeg_tools() -> list[str]:
     return [t for t in ("ffmpeg", "ffprobe") if shutil.which(t) is None]
 
 
-def ffmpeg_problem() -> str | None:
-    missing = missing_ffmpeg_tools()
-    if not missing:
+MIN_FFMPEG = (5, 1)    # first release with -fps_mode (replaces -vsync)
+MIN_GIT_BUILD_DATE = datetime.date(2022, 7, 1)   # 5.1 branched around here
+
+
+def parse_ffmpeg_version(banner: str) -> tuple[str, tuple[int, int] | None]:
+    """(version text, (major, minor)) from the first line of `ffmpeg -version`.
+
+    Release builds read "ffmpeg version 6.1.1-3ubuntu5" or "n7.0". Git builds
+    have no release number, so the tuple is None; see ffmpeg_build_date and
+    ffmpeg_problem for how those are judged. Anything unrecognised is
+    ("unknown", None).
+    """
+    m = re.search(r"ffmpeg version\s+(\S+)", banner)
+    if not m:
+        return "unknown", None
+    text = m.group(1)
+    r = re.match(r"[nN]?(\d+)\.(\d+)", text)
+    return text, (int(r.group(1)), int(r.group(2))) if r else None
+
+
+def ffmpeg_build_date(text: str) -> datetime.date | None:
+    """Build date embedded in a git-build version string, if there is one:
+    Gyan "2024-05-13-git-37db0454e4-full_build-..." (leading date) or BtbN
+    "N-127388-g615b07170e-20261012" (trailing date). None when undated."""
+    m = (re.match(r"(\d{4})-(\d{2})-(\d{2})-git", text)
+         or re.search(r"-(\d{4})(\d{2})(\d{2})$", text))
+    if not m:
         return None
-    return (f"{' and '.join(missing)} not found on PATH. Install it: "
-            f"{FFMPEG_FIX}")
+    try:
+        return datetime.date(*map(int, m.groups()))
+    except ValueError:
+        return None
+
+
+@functools.lru_cache(maxsize=1)
+def ffmpeg_version() -> tuple[str, tuple[int, int] | None]:
+    """Detected ffmpeg version; `ffmpeg -version` runs once per process."""
+    try:
+        p = subprocess.run(["ffmpeg", "-version"], capture_output=True,
+                           text=True, encoding="utf-8", errors="replace",
+                           timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return "unknown", None
+    return parse_ffmpeg_version(p.stdout.splitlines()[0] if p.stdout else "")
+
+
+def ffmpeg_problem() -> str | None:
+    """Why the ffmpeg install is unusable (missing or too old), else None.
+
+    Releases older than 5.1 are refused. Git builds are judged by their build
+    date: dated before 2022-07-01 (pre-5.1, no -fps_mode) is refused; undated
+    git builds and unrecognised banners are given the benefit of the doubt.
+    """
+    missing = missing_ffmpeg_tools()
+    if missing:
+        return (f"{' and '.join(missing)} not found on PATH. Install it: "
+                f"{FFMPEG_FIX}")
+    text, ver = ffmpeg_version()
+    built = ffmpeg_build_date(text) if ver is None else None
+    if (ver is not None and ver < MIN_FFMPEG) or (
+            built is not None and built < MIN_GIT_BUILD_DATE):
+        return (f"ffmpeg {text} is too old: ClipForge needs ffmpeg "
+                f"{MIN_FFMPEG[0]}.{MIN_FFMPEG[1]} or newer. Upgrade it: "
+                f"{FFMPEG_FIX}")
+    return None
+
+
+def report_ffmpeg() -> None:
+    """Print which ffmpeg is in use (stderr, so job output stays parseable)."""
+    print(f"ffmpeg: {ffmpeg_version()[0]}", file=sys.stderr)
 
 
 def port_problem(host: str, port: int) -> str | None:
@@ -152,6 +220,7 @@ def main() -> int:
         if problem:
             print(f"INGEST FAILED: {problem}", file=sys.stderr)
             return 2
+        report_ffmpeg()
         try:
             m = ingest(args.video, args.workspace,
                        job_id=args.job_id, force=args.force)
@@ -282,6 +351,7 @@ def main() -> int:
         if problem:
             print(f"PIPELINE FAILED: {problem}", file=sys.stderr)
             return 2
+        report_ffmpeg()
         from clipforge.pipeline import PipelineConfig, run_pipeline
         m = run_pipeline(Path(args.workspace) / args.job_id, PipelineConfig())
         print(f"job {m.job_id} -> {m.stage.value}")
@@ -296,7 +366,9 @@ def main() -> int:
         if warning:
             print(f"WARNING: {warning}\n"
                   "The review page will load, but uploads and rendering "
-                  "will fail until it is installed.", file=sys.stderr)
+                  "will fail until that is fixed.", file=sys.stderr)
+        else:
+            report_ffmpeg()
         import uvicorn
         from clipforge.server.app import create_app
         app = create_app(Path(args.workspace))

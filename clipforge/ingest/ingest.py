@@ -175,7 +175,7 @@ def normalize(src: Path, dst: Path, pr: ProbeResult) -> tuple[float, int, int]:
         "ffmpeg", "-y", "-i", str(src),
         "-map", "0:v:0", "-map", "0:a:0",
         "-vf", f"scale={out_w}:{out_h}",
-        "-r", str(out_fps), "-vsync", "cfr",
+        "-r", str(out_fps), "-fps_mode", "cfr",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2",
