@@ -12,11 +12,13 @@ from pathlib import Path
 
 from clipforge.common.manifest import Manifest
 from clipforge.ingest.ingest import IngestError, ingest
+from clipforge.settings import load_env
 
 DEFAULT_WS = Path.home() / "clipforge-workspace"
 
 
 def main() -> int:
+    load_env()
     p = argparse.ArgumentParser(prog="clipforge")
     sub = p.add_subparsers(dest="cmd", required=True)
 
