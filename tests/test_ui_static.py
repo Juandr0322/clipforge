@@ -69,3 +69,41 @@ def test_polling_is_not_a_fixed_interval():
     # a setInterval would poll forever
     assert not re.search(r"(?<![\w.])setInterval\s*\(", _source())
     assert not re.search(r"window\.setInterval\s*\(", _source())
+
+
+# ---- F06: keyboard shortcuts --------------------------------------------
+
+SHORTCUT_KEYS = {"a", "r", " ", "j", "ArrowDown", "k", "ArrowUp", "[", "]",
+                 "?", "Escape"}
+
+
+def _shortcut_table() -> str:
+    m = re.search(r"const SHORTCUTS = \[(.*?)\n\];", _source(), re.S)
+    assert m, "SHORTCUTS table not found"
+    return m.group(1)
+
+
+def test_shortcut_table_lists_the_documented_keys():
+    # one entry per key; the key handler and the help panel both read this
+    # table, so what the help says is what the page does
+    entries = re.findall(r"keys: \[(.*?)\],\s*label: \"([^\"]+)\"", _shortcut_table())
+    keys = [k for group, _ in entries
+            for k in re.findall(r'"((?:[^"\\]|\\.)*)"', group)]
+    assert sorted(keys) == sorted(SHORTCUT_KEYS)
+    assert len(entries) == len(re.findall(r"\bdesc:", _shortcut_table()))
+
+
+def test_help_panel_and_key_handler_are_built_from_the_table():
+    src = _source()
+    assert "SHORTCUTS.flatMap" in src          # help panel rows
+    assert "KEYMAP.get(" in src                # key handler lookup
+    # no second, hand-written key dispatch that could drift from the table
+    assert not re.search(r"e\.key\s*===\s*[\"'](a|r|j|k|\?|\[|\])[\"']", src, re.I)
+
+
+def test_view_prefs_storage_is_guarded():
+    src = _source()
+    assert src.count("localStorage") == 2
+    for m in re.finditer(r"localStorage", src):
+        before = src[:m.start()]
+        assert before.rfind("try {") > before.rfind("} catch"), "unguarded localStorage"

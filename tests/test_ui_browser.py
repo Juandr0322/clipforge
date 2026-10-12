@@ -1,5 +1,5 @@
 """
-Browser-level checks of the review page (F05), driven by Playwright.
+Browser-level checks of the review page (F05, F06), driven by Playwright.
 
 Starts the real server (mock engines, temp workspace) in a subprocess and
 drives headless Chromium against it. Skipped when playwright or its
@@ -12,6 +12,8 @@ asked:
 """
 import json
 import os
+import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -149,8 +151,21 @@ def _serve_webm_for_clips(page, tmp: Path):
             "-c:v", "libvpx", "-b:v", "100k", str(webm)],
             check=True, capture_output=True)
     body = webm.read_bytes()
-    page.route("**/clips/*/video", lambda route: route.fulfill(
-        status=200, body=body, content_type="video/webm"))
+
+    def serve(route):
+        # honour Range requests, or Chromium cannot seek (F06 sets currentTime)
+        m = re.match(r"bytes=(\d+)-(\d*)", route.request.headers.get("range", ""))
+        if not m:
+            route.fulfill(status=200, body=body, content_type="video/webm",
+                          headers={"Accept-Ranges": "bytes"})
+            return
+        lo = int(m.group(1))
+        hi = min(int(m.group(2) or len(body) - 1), len(body) - 1)
+        route.fulfill(status=206, body=body[lo:hi + 1], content_type="video/webm",
+                      headers={"Accept-Ranges": "bytes",
+                               "Content-Range": f"bytes {lo}-{hi}/{len(body)}"})
+
+    page.route("**/clips/*/video", serve)
 
 
 def _upload(page, name: str, video: Path):
@@ -344,6 +359,434 @@ def test_dirty_field_is_released_on_blur(env, seeded, page):
     note.fill(server_value)
     page.locator("#detail .stagebar").click()      # blur
     assert note.evaluate("n => n.dataset.dirty") is None
+
+
+# ---- F06: review speed ----------------------------------------------------
+# A job with four clips whose score order differs from their time order:
+#   id:     0      1      2      3
+#   score:  85     65     95     40       -> by score: 2, 0, 1, 3
+#   start:  ~3.1   ~11.5  5.0    1.0      -> by time:  3, 0, 2, 1
+
+BY_SCORE = [2, 0, 1, 3]
+BY_TIME = [3, 0, 2, 1]
+
+
+@pytest.fixture(scope="module")
+def multi(env):
+    """A finished job rewritten to hold four rendered clips."""
+    import httpx
+    from clipforge.refine.refine import RefinedSet
+    server, _, tmp = env
+    vid = _make_video(tmp / "m.mp4", 30)
+    r = httpx.post(server.base + "/api/jobs", timeout=60, files={
+        "file": ("f06-multi.mp4", vid.read_bytes(), "video/mp4")})
+    assert r.status_code == 200, r.text
+    jid = r.json()["job_id"]
+    server.wait_idle()
+    job_dir = tmp / "ws" / jid
+    rs = RefinedSet.load(job_dir / "refined.json")
+    assert len(rs.clips) >= 2
+    c0, c1 = rs.clips[0], rs.clips[1]
+    assert c0.start < 5.0 < c1.start
+    rs.clips = [
+        c0.model_copy(update={"id": 0, "score": 85, "hook": "hook zero"}),
+        c1.model_copy(update={"id": 1, "score": 65, "hook": "hook one"}),
+        c0.model_copy(update={"id": 2, "score": 95, "hook": "hook two", "start": 5.0,
+                              "speech_start": 5.5, "speech_end": 18.5, "end": 19.0}),
+        c0.model_copy(update={"id": 3, "score": 40, "hook": "hook three", "start": 1.0,
+                              "speech_start": 1.5, "speech_end": 14.5, "end": 15.0}),
+    ]
+    rs.save(job_dir / "refined.json")
+    for cid in (2, 3):
+        for suffix in (".mp4", "_qa.png"):
+            shutil.copy(job_dir / "renders" / f"clip_000{suffix}",
+                        job_dir / "renders" / f"clip_{cid:03d}{suffix}")
+    return server, jid, job_dir
+
+
+@pytest.fixture
+def fresh(multi):
+    """The four-clip job with no reviews."""
+    _, jid, job_dir = multi
+    (job_dir / "reviews.json").unlink(missing_ok=True)
+    return multi
+
+
+def _open_multi(page, server):
+    page.goto(server.base)
+    _open_first_job(page, "f06-multi.mp4")
+    page.wait_for_selector(".clip.sel")
+
+
+def _visible(page) -> list[int]:
+    return page.eval_on_selector_all(
+        ".clip:not([hidden])", "els => els.map(e => Number(e.dataset.clip))")
+
+
+def _selected(page):
+    sel = page.locator(".clip.sel")
+    return int(sel.get_attribute("data-clip")) if sel.count() else None
+
+
+def _counts(page) -> dict[str, int]:
+    return {b.get_attribute("data-filter"): int(b.get_attribute("data-count"))
+            for b in page.locator("button[data-filter]").all()}
+
+
+def _decisions(server, jid) -> dict[int, str | None]:
+    return {c["id"]: (c["review"] or {}).get("decision")
+            for c in _get(server.base, f"/api/jobs/{jid}")["clips"]}
+
+
+def _refresh_now(page):
+    with page.expect_response(re.compile(r"/api/jobs/[^/]+$")):
+        page.evaluate("refresh()")
+    page.wait_for_timeout(300)
+
+
+def test_keyboard_shortcuts_act_on_the_selected_clip(env, fresh, page):
+    server, jid, _ = fresh
+    _, _, tmp = env
+    _serve_webm_for_clips(page, tmp)
+    _open_multi(page, server)
+    assert _visible(page) == BY_SCORE      # default sort: score, high to low
+    assert _selected(page) == 2
+
+    # J/K and Down/Up move the selection and stop at the ends
+    for key, want in [("j", 0), ("ArrowDown", 1), ("k", 0), ("ArrowUp", 2), ("ArrowUp", 2)]:
+        page.keyboard.press(key)
+        assert _selected(page) == want, key
+
+    # A approves, R rejects, both for the selected clip
+    page.keyboard.press("j")               # clip 0
+    page.keyboard.press("a")
+    page.locator(".toast.ok", has_text="clip 1 approved").wait_for(timeout=3000)
+    assert _decisions(server, jid)[0] == "approved"
+    assert page.locator('.clip[data-clip="0"] .approve.on').count() == 1
+    page.keyboard.press("r")
+    page.locator(".toast.ok", has_text="clip 1 rejected").wait_for(timeout=3000)
+    assert _decisions(server, jid)[0] == "rejected"
+    assert _decisions(server, jid)[2] is None
+
+    # Space plays and pauses the selected clip's video only
+    page.evaluate("document.querySelectorAll('.clip video').forEach(v => v.muted = true)")
+    video = '.clip[data-clip="0"] video'
+    page.wait_for_function("sel => document.querySelector(sel).readyState >= 1", arg=video)
+    page.keyboard.press(" ")
+    page.wait_for_function("sel => !document.querySelector(sel).paused", arg=video)
+    page.keyboard.press(" ")
+    page.wait_for_function("sel => document.querySelector(sel).paused", arg=video)
+
+    # ? opens the help panel, which lists exactly the page's shortcuts; Esc closes it
+    assert page.locator("#help").is_hidden()
+    page.keyboard.press("?")
+    assert page.locator("#help").is_visible()
+    assert page.locator("#helpbtn").get_attribute("aria-expanded") == "true"
+    shown = page.locator("#help dt").all_inner_texts()
+    assert shown == page.evaluate("SHORTCUTS.map(s => s.label)")
+    keys = page.evaluate("[...KEYMAP.keys()].sort()")
+    assert keys == sorted(["a", "r", " ", "j", "k", "ArrowDown", "ArrowUp",
+                           "[", "]", "?", "Escape"])
+    page.keyboard.press("Escape")
+    assert page.locator("#help").is_hidden()
+    page.locator("#helpbtn").click()
+    assert page.locator("#help").is_visible()
+    page.locator("#helpclose").click()
+    assert page.locator("#help").is_hidden()
+    assert page.dialogs == []
+
+
+def test_shortcuts_are_ignored_while_typing(env, fresh, page):
+    server, jid, _ = fresh
+    _open_multi(page, server)
+    page.keyboard.press("j")
+    assert _selected(page) == 0
+    note = page.locator('.clip[data-clip="0"] [data-field="note"]')
+    start = page.locator('.clip[data-clip="0"] [data-field="start"]')
+    note.click()
+    page.keyboard.type("arjk?[] ")
+    page.keyboard.press("ArrowDown")
+    assert note.input_value() == "arjk?[] "
+    start.click()
+    page.keyboard.type("a[")
+    assert start.input_value() == "a["
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(500)
+    assert _decisions(server, jid) == {0: None, 1: None, 2: None, 3: None}
+    assert _selected(page) == 0
+    assert page.locator("#help").is_hidden()
+    assert page.locator(".toast").count() == 0
+
+    # leaving the field hands the keys back
+    page.locator("#detail .stagebar").click()
+    page.keyboard.press("j")
+    assert _selected(page) == 1
+
+
+def test_filter_counts_and_approving_advances_to_next_unreviewed(env, fresh, page):
+    server, jid, _ = fresh
+    _open_multi(page, server)
+    assert _counts(page) == {"all": 4, "unreviewed": 4, "approved": 0, "rejected": 0}
+    assert page.locator('button[data-filter="unreviewed"]').inner_text() == "unreviewed (4)"
+
+    page.locator('button[data-filter="unreviewed"]').click()
+    assert _visible(page) == BY_SCORE and _selected(page) == 2
+
+    page.keyboard.press("a")                # approve clip 2: leaves the view
+    page.wait_for_function("document.querySelectorAll('.clip:not([hidden])').length === 3")
+    assert _visible(page) == [0, 1, 3]
+    assert _selected(page) == 0             # the next unreviewed clip
+    assert _counts(page) == {"all": 4, "unreviewed": 3, "approved": 1, "rejected": 0}
+
+    page.keyboard.press("r")                # reject clip 0
+    page.wait_for_function("document.querySelectorAll('.clip:not([hidden])').length === 2")
+    assert _visible(page) == [1, 3] and _selected(page) == 1
+    assert _counts(page) == {"all": 4, "unreviewed": 2, "approved": 1, "rejected": 1}
+
+    # no unreviewed clip after the last one: fall back to the one before it
+    page.keyboard.press("j")
+    assert _selected(page) == 3
+    page.keyboard.press("a")
+    page.wait_for_function("document.querySelectorAll('.clip:not([hidden])').length === 1")
+    assert _visible(page) == [1] and _selected(page) == 1
+
+    # the server agrees, and a background refresh keeps the same picture
+    assert _decisions(server, jid) == {0: "rejected", 1: None, 2: "approved", 3: "approved"}
+    _refresh_now(page)
+    assert _visible(page) == [1] and _selected(page) == 1
+    assert _counts(page) == {"all": 4, "unreviewed": 1, "approved": 2, "rejected": 1}
+
+    # the other filters show the matching clips; an empty one says so
+    page.locator('button[data-filter="approved"]').click()
+    assert _visible(page) == [2, 3] and _selected(page) == 3   # clip 1 left; next in order
+    page.locator('button[data-filter="rejected"]').click()
+    assert _visible(page) == [0] and _selected(page) == 0
+    page.locator('button[data-filter="all"]').click()
+    assert _visible(page) == BY_SCORE
+    page.locator('button[data-filter="unreviewed"]').click()
+    page.keyboard.press("a")
+    page.wait_for_function("document.querySelectorAll('.clip:not([hidden])').length === 0")
+    assert page.locator(".nomatch").is_visible()
+    assert _selected(page) is None
+    page.keyboard.press("a")                # nothing selected: nothing happens
+    page.wait_for_timeout(300)
+    assert _decisions(server, jid) == {0: "rejected", 1: "approved", 2: "approved", 3: "approved"}
+
+
+def test_sort_and_filter_survive_refresh_and_reload(env, fresh, page):
+    import httpx
+    server, jid, _ = fresh
+    httpx.post(f"{server.base}/api/jobs/{jid}/clips/2/review",
+               json={"decision": "approved", "note": ""}).raise_for_status()
+    _open_multi(page, server)
+    assert _visible(page) == BY_SCORE
+
+    page.locator("select[data-sort]").select_option("time")
+    assert _visible(page) == BY_TIME
+    page.locator('button[data-filter="unreviewed"]').click()
+    assert _visible(page) == [3, 0, 1]
+
+    # a background refresh, with the server's state changed meanwhile
+    httpx.post(f"{server.base}/api/jobs/{jid}/clips/3/review",
+               json={"decision": "rejected", "note": ""}).raise_for_status()
+    _refresh_now(page)
+    assert _visible(page) == [0, 1]
+    assert page.locator("select[data-sort]").input_value() == "time"
+    assert page.locator('button[data-filter="unreviewed"]').get_attribute("aria-pressed") == "true"
+    assert _counts(page) == {"all": 4, "unreviewed": 2, "approved": 1, "rejected": 1}
+
+    # a reload remembers both choices
+    page.reload()
+    _open_first_job(page, "f06-multi.mp4")
+    assert page.locator("select[data-sort]").input_value() == "time"
+    assert page.locator('button[data-filter="unreviewed"]').get_attribute("aria-pressed") == "true"
+    assert _visible(page) == [0, 1]
+    page.locator('button[data-filter="all"]').click()
+    assert _visible(page) == BY_TIME
+    page.locator("select[data-sort]").select_option("score")
+    assert _visible(page) == BY_SCORE
+    page.reload()
+    _open_first_job(page, "f06-multi.mp4")
+    assert page.locator("select[data-sort]").input_value() == "score"
+    assert _visible(page) == BY_SCORE
+
+
+def test_view_prefs_work_when_storage_is_blocked(env, fresh, page):
+    server, _, _ = fresh
+    errors = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.add_init_script("""
+        Storage.prototype.getItem = () => { throw new Error('blocked'); };
+        Storage.prototype.setItem = () => { throw new Error('blocked'); };
+    """)
+    _open_multi(page, server)
+    page.locator("select[data-sort]").select_option("time")
+    page.locator('button[data-filter="approved"]').click()
+    assert _visible(page) == []
+    page.locator('button[data-filter="all"]').click()
+    assert _visible(page) == BY_TIME
+    assert errors == []
+
+
+def _seek(page, cid: int, t: float) -> float:
+    sel = f'.clip[data-clip="{cid}"] video'
+    page.wait_for_function("sel => document.querySelector(sel).readyState >= 1", arg=sel)
+    return page.evaluate("""([sel, t]) => new Promise(res => {
+        const v = document.querySelector(sel);
+        v.pause();
+        v.addEventListener('seeked', () => res(v.currentTime), {once: true});
+        v.currentTime = t;
+    })""", [sel, t])
+
+
+def test_trim_fields_are_set_from_the_playhead(env, fresh, page):
+    server, jid, _ = fresh
+    _, _, tmp = env
+    _serve_webm_for_clips(page, tmp)
+    clip = next(c for c in _get(server.base, f"/api/jobs/{jid}")["clips"] if c["id"] == 0)
+    s0, e0 = clip["start"], clip["end"]
+    before = _get(server.base, f"/api/jobs/{jid}")["metrics"]["avg_trim_adjustment_sec"]
+    assert before == 0.0
+
+    _open_multi(page, server)
+    page.keyboard.press("j")                 # select clip 0
+    assert _selected(page) == 0
+    start = page.locator('.clip[data-clip="0"] [data-field="start"]')
+    end = page.locator('.clip[data-clip="0"] [data-field="end"]')
+
+    # the button: pause at 3.0 s -> start = S + 3.0, in absolute source seconds
+    t = _seek(page, 0, 3.0)
+    assert t == pytest.approx(3.0, abs=0.05)
+    page.locator('.clip[data-clip="0"] button[data-act="setstart"]').click()
+    assert float(start.input_value()) == pytest.approx(s0 + t, abs=0.002)
+    assert float(start.input_value()) > 3.0 and s0 > 0     # absolute, not clip-relative
+
+    # [ does the same thing from the keyboard
+    t = _seek(page, 0, 2.0)
+    page.keyboard.press("[")
+    assert float(start.input_value()) == pytest.approx(s0 + t, abs=0.002)
+    t = _seek(page, 0, 3.0)
+    page.locator('.clip[data-clip="0"] button[data-act="setstart"]').click()
+    want_start = s0 + t
+    assert float(start.input_value()) == pytest.approx(want_start, abs=0.002)
+
+    # ] and the button for the end
+    t = _seek(page, 0, 5.0)
+    page.keyboard.press("]")
+    want_end = s0 + t
+    assert float(end.input_value()) == pytest.approx(want_end, abs=0.002)
+    t = _seek(page, 0, 5.0)
+    page.locator('.clip[data-clip="0"] button[data-act="setend"]').click()
+    assert float(end.input_value()) == pytest.approx(s0 + t, abs=0.002)
+
+    # a background refresh must not overwrite the values that were set
+    _refresh_now(page)
+    assert float(start.input_value()) == pytest.approx(want_start, abs=0.002)
+    assert float(end.input_value()) == pytest.approx(want_end, abs=0.002)
+
+    # saving stores them and moves the job's avg-trim metric
+    page.locator('.clip[data-clip="0"] .approve').click()
+    page.locator(".toast.ok", has_text="saved").wait_for(timeout=3000)
+    detail = _get(server.base, f"/api/jobs/{jid}")
+    review = next(c for c in detail["clips"] if c["id"] == 0)["review"]
+    assert review["decision"] == "approved"
+    assert review["adjusted_start"] == pytest.approx(want_start, abs=0.002)
+    assert review["adjusted_end"] == pytest.approx(want_end, abs=0.002)
+    expected = abs(want_start - s0) + abs(want_end - e0)
+    assert detail["metrics"]["avg_trim_adjustment_sec"] == pytest.approx(expected, abs=0.02)
+    assert detail["metrics"]["avg_trim_adjustment_sec"] != before
+    assert page.dialogs == []
+
+
+def test_trim_start_after_end_is_not_saved(env, fresh, page):
+    server, jid, _ = fresh
+    _open_multi(page, server)
+    card = '.clip[data-clip="0"]'
+    page.keyboard.press("j")
+    page.locator(f'{card} [data-field="start"]').fill("20")
+    page.locator(f'{card} [data-field="end"]').fill("10")
+    page.locator(f"{card} .approve").click()
+    page.locator(".toast.err", has_text="before").wait_for(timeout=3000)
+    assert _decisions(server, jid)[0] is None
+
+
+def test_selection_moves_to_the_neighbour_when_a_refresh_removes_it(env, fresh, page):
+    server, jid, job_dir = fresh
+    refined = job_dir / "refined.json"
+    original = refined.read_text()
+    _open_multi(page, server)
+    assert _visible(page) == BY_SCORE
+    page.keyboard.press("j")
+    page.keyboard.press("j")
+    assert _selected(page) == 1                 # third in score order
+    try:
+        data = json.loads(original)
+        data["clips"] = [c for c in data["clips"] if c["id"] != 1]
+        refined.write_text(json.dumps(data))
+        _refresh_now(page)
+        assert _visible(page) == [2, 0, 3]
+        assert _selected(page) == 3             # took the removed clip's place
+        data["clips"] = [c for c in data["clips"] if c["id"] != 3]
+        refined.write_text(json.dumps(data))
+        _refresh_now(page)
+        assert _visible(page) == [2, 0]
+        assert _selected(page) == 0             # none after it: the previous one
+    finally:
+        refined.write_text(original)
+
+
+def test_help_panel_is_modal_and_space_scrolls_without_a_selection(env, fresh, page):
+    server, jid, _ = fresh
+    _open_multi(page, server)
+    page.keyboard.press("?")
+    assert page.locator("#help").is_visible()
+    sel = _selected(page)
+    for key in ["a", "r", "j", "ArrowDown", "k", " ", "[", "]"]:
+        page.keyboard.press(key)
+    page.wait_for_timeout(300)
+    assert _selected(page) == sel
+    assert _decisions(server, jid) == {0: None, 1: None, 2: None, 3: None}
+    # Esc closes it even when the cursor is in a field
+    page.locator('.clip[data-clip="0"] [data-field="note"]').focus()
+    page.keyboard.press("Escape")
+    assert page.locator("#help").is_hidden()
+
+    # a key with nothing to act on keeps its normal job
+    page.locator("#detail .stagebar").click()
+    prevented = page.evaluate("""() => {
+        selected = null;
+        const ev = new KeyboardEvent('keydown', {key: ' ', bubbles: true, cancelable: true});
+        document.body.dispatchEvent(ev);
+        return ev.defaultPrevented;
+    }""")
+    assert prevented is False
+
+
+def test_keys_while_the_pane_is_loading_write_no_review(env, seeded, fresh, page):
+    server, jid, _ = fresh
+    a_id = jid
+    b_id = next(j["job_id"] for j in _get(server.base, "/api/jobs")
+                if j["filename"] == EVIL_NAME)
+    assert a_id != b_id
+    before = (_decisions(server, a_id), _decisions(server, b_id))
+
+    _open_multi(page, server)                   # job A, a clip selected
+    assert _selected(page) is not None
+
+    held = []                                   # B's detail response is held back
+    page.route(f"**/api/jobs/{b_id}", lambda route: held.append(route))
+    page.evaluate("id => document.querySelector(`.job[data-job=\"${id}\"]`).click()", b_id)
+    page.wait_for_timeout(300)
+    assert held, "the detail request should be pending"
+    assert page.locator("#detail .empty").inner_text() == "loading…"
+    for key in ["a", "r", "j", " "]:
+        page.keyboard.press(key)
+    assert page.locator("#detail .empty").inner_text() == "loading…"
+    held[0].continue_()
+    page.wait_for_selector(f'.clip[data-job="{b_id}"]', timeout=10000)
+    page.wait_for_timeout(500)
+    assert (_decisions(server, a_id), _decisions(server, b_id)) == before
+    assert page.locator(".toast.ok").count() == 0
 
 
 def test_inline_toasts_and_no_dialogs(env, seeded, page):
