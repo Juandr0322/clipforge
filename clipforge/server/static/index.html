@@ -201,7 +201,7 @@ $("#file").addEventListener("change", async e => {
 // after every pass whether to schedule the next one.
 let pollTimer = null, refreshing = false, refreshAgain = false;
 let wasPolling = false;      // the last successful job list had a running job
-let retriedAfterFail = false, lastRefreshAt = 0;
+let retriedAfterFail = false, lastRefreshAt = 0, offline = false;
 const RETRY_MS = 3000;
 
 async function refresh() {
@@ -216,7 +216,6 @@ async function refresh() {
   } catch (err) { failure = err; }
 
   if (jobs) {
-    retriedAfterFail = false;
     wasPolling = jobs.some(j => j.running);
     if (wasPolling) delay = POLL_MS;
     try {
@@ -229,8 +228,11 @@ async function refresh() {
     } catch (err) { failure = err; }   // polling decision above stays valid
   } else if (wasPolling) {
     delay = POLL_MS;                   // we were watching a running job: keep trying
-  } else if (!retriedAfterFail) {
-    retriedAfterFail = true;           // job list unknown: one retry, then focus/visibility
+  }
+  if (!failure) retriedAfterFail = false;
+  else if (delay === null && !retriedAfterFail) {
+    // something failed while nothing is polling: one retry, then focus/visibility
+    retriedAfterFail = true;
     delay = RETRY_MS;
   }
 
@@ -243,7 +245,6 @@ async function refresh() {
   if (delay !== null) pollTimer = setTimeout(refresh, delay);
   if (refreshAgain) { refreshAgain = false; refresh(); }
 }
-let offline = false;
 
 // Coming back to the tab (or the window) is a cheap moment to re-check, and
 // recovers from a refresh that failed while nothing was being polled.
@@ -347,6 +348,7 @@ async function renderDetail(jobId) {
     D.status.className = "err";
     D.statusText.textContent = "stage failed: " + (j.error || "unknown error");
     D.retry.hidden = false;
+    D.retry.disabled = false;
   } else if (j.running || j.stage !== "rendered") {
     D.status.hidden = false;
     D.status.className = "err warn";
@@ -453,7 +455,10 @@ $("#detail").addEventListener("click", e => {
   if (!btn || btn.disabled) return;
   const act = btn.dataset.act;
   // every action targets the job its own element was built for, never "whatever is open now"
-  if (act === "rerun") rerun(btn.dataset.job);
+  if (act === "rerun") {
+    btn.disabled = true;               // re-enabled by the next refresh
+    rerun(btn.dataset.job);
+  }
   else if (act === "export") exportExamples(btn.dataset.job);
   else {
     const el = btn.closest(".clip");

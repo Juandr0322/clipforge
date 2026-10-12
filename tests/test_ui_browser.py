@@ -272,6 +272,31 @@ def test_switching_jobs_never_acts_on_the_wrong_job(env, seeded, page):
     assert page.dialogs == []
 
 
+def test_slow_detail_response_for_old_job_is_ignored(env, seeded, page):
+    import httpx
+    server, _, _ = env
+    jobs = _get(server.base, "/api/jobs")
+    by_name = {j["filename"]: j["job_id"] for j in jobs}
+    a_id, b_id = by_name[EVIL_NAME], by_name["switch-b.mp4"]
+
+    page.goto(server.base)
+    page.locator("#joblist .job").first.wait_for()
+
+    def slow(route):
+        time.sleep(1.5)          # the response for A arrives after B was opened
+        route.continue_()
+
+    page.route(f"**/api/jobs/{a_id}", slow)
+    page.evaluate("id => document.querySelector(`.job[data-job=\"${id}\"]`).click()", a_id)
+    page.wait_for_timeout(200)
+    page.evaluate("id => document.querySelector(`.job[data-job=\"${id}\"]`).click()", b_id)
+    page.wait_for_selector(f'.clip[data-job="{b_id}"]')
+    page.wait_for_timeout(2500)           # let A's late response land
+    assert page.locator(f'.clip:not([data-job="{b_id}"])').count() == 0
+    assert page.locator(".clip").count() > 0
+    assert httpx.get(server.base + "/api/jobs").status_code == 200
+
+
 def test_recovers_from_a_failed_first_load(env, seeded, page):
     server, _, _ = env
     failures = []
@@ -288,6 +313,25 @@ def test_recovers_from_a_failed_first_load(env, seeded, page):
     page.locator(".toast.err").wait_for(timeout=3000)
     # nothing was running, so there is no polling, yet one retry fixes the list
     page.wait_for_selector("#joblist .job", timeout=8000)
+
+
+def test_recovers_when_detail_fails_while_idle(env, seeded, page):
+    server, _, _ = env
+    failures = []
+
+    def flaky(route):
+        if not failures:
+            failures.append(1)
+            route.abort()
+        else:
+            route.continue_()
+
+    page.goto(server.base)
+    page.locator("#joblist .job").first.wait_for()
+    page.route("**/api/metrics", flaky)       # fails once, the job list succeeds
+    page.locator("#joblist .job").first.click()
+    page.locator(".toast.err").wait_for(timeout=3000)
+    page.wait_for_selector(".clip", timeout=8000)   # one retry, no focus needed
 
 
 def test_dirty_field_is_released_on_blur(env, seeded, page):
