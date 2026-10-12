@@ -442,6 +442,14 @@ function syncClips(j) {
     if (!card) { card = buildCard(c.id, j.job_id); cards.set(c.id, card); }
     updateCard(card, c, j.job_id);
   }
+  // If the selected clip is going away, move to the clip that now sits at its
+  // place in the old order (the next one, else the previous one).
+  if (selected !== null && !seen.has(selected)) {
+    const i = order.indexOf(selected);
+    const next = order.slice(i + 1).find(id => seen.has(id));
+    const prev = order.slice(0, Math.max(i, 0)).reverse().find(id => seen.has(id));
+    selected = next !== undefined ? next : (prev !== undefined ? prev : null);
+  }
   for (const [id, card] of cards) if (!seen.has(id)) { card.el.remove(); cards.delete(id); }
   layout();
   applyView();
@@ -523,10 +531,11 @@ function ensureSelection() {
 
 function move(delta) {
   const vis = visibleIds();
-  if (!vis.length) return;
+  if (!vis.length) return false;
   const i = vis.indexOf(selected);
   const next = i < 0 ? vis[0] : vis[Math.min(vis.length - 1, Math.max(0, i + delta))];
   select(next, true);
+  return true;
 }
 
 function buildCard(id, jobId) {
@@ -550,7 +559,7 @@ function buildCard(id, jobId) {
       ts, setBtn("setstart", "set start", "use the video's current time ( [ )"),
       te, setBtn("setend", "set end", "use the video's current time ( ] )"), tn),
     h("div", {class: "btnrow"}, approve, reject));
-  return {id, jobId, el, slot, video: null, srcStart: 0, scoreNum: 0, start: 0, decision: null, localAt: 0, hook, score, info, reason, qa, qaWrap, ts, te, tn, approve, reject};
+  return {id, jobId, el, slot, video: null, scoreNum: 0, start: 0, decision: null, localAt: 0, hook, score, info, reason, qa, qaWrap, ts, te, tn, approve, reject};
 }
 
 // Fill a field from the server unless the reviewer is editing it.
@@ -573,7 +582,6 @@ function updateCard(card, c, jobId) {
   const r = c.review;
   card.scoreNum = c.score;
   card.start = c.start;      // the rendered video begins at this source time
-  card.srcStart = c.start;
   card.hook.textContent = `“${c.hook}”`;
   card.score.textContent = "score " + c.score;
   card.info.textContent = ` · ${c.type} · ${c.duration}s · ${c.start.toFixed(1)}s → ${c.end.toFixed(1)}s`;
@@ -707,27 +715,34 @@ function setTrimFromPlayhead(card, which) {
   const v = card.video;
   if (!v || v.readyState < 1) { toast("the video is not loaded yet", "err"); return; }
   const input = which === "start" ? card.ts : card.te;
-  input.value = fmtSec(card.srcStart + v.currentTime);
+  input.value = fmtSec(card.start + v.currentTime);
   input.dataset.dirty = "1";               // polling must not overwrite it
 }
 
 function decideSelected(decision) {
   const card = selectedCard();
-  if (card) review(card.jobId, card.id, decision);
+  if (!card) return false;
+  review(card.jobId, card.id, decision);
+  return true;
 }
 function togglePlaySelected() {
   const v = selectedCard()?.video;
-  if (!v) return;
+  if (!v) return false;
   if (v.paused) v.play().catch(() => {}); else v.pause();
+  return true;
 }
 function trimSelected(which) {
   const card = selectedCard();
-  if (card) setTrimFromPlayhead(card, which);
+  if (!card) return false;
+  setTrimFromPlayhead(card, which);
+  return true;
 }
 
 // ---------- keyboard shortcuts ----------
 // One table drives both the key handler and the help panel, so they cannot
 // drift apart. `repeat: true` marks keys that may auto-repeat when held.
+// run() returns false when there was nothing to act on, so the browser keeps
+// the key's normal job (Space scrolls the page when no clip is selected).
 const SHORTCUTS = [
   {keys: ["a"], label: "A", desc: "approve the selected clip", run: () => decideSelected("approved")},
   {keys: ["r"], label: "R", desc: "reject the selected clip", run: () => decideSelected("rejected")},
@@ -737,16 +752,18 @@ const SHORTCUTS = [
   {keys: ["["], label: "[", desc: "set trim start from the video's current time", run: () => trimSelected("start")},
   {keys: ["]"], label: "]", desc: "set trim end from the video's current time", run: () => trimSelected("end")},
   {keys: ["?"], label: "?", desc: "show or hide this help", run: () => toggleHelp()},
-  {keys: ["Escape"], label: "Esc", desc: "close this help", run: () => toggleHelp(false)},
+  {keys: ["Escape"], label: "Esc", desc: "close this help", run: () => helpOpen() && toggleHelp(false)},
 ];
 const KEYMAP = new Map();
 for (const s of SHORTCUTS) for (const k of s.keys) KEYMAP.set(k, s);
 
+function helpOpen() { return !$("#help").hidden; }
 function toggleHelp(open) {
   const panel = $("#help");
   const show = open === undefined ? panel.hidden : open;
   panel.hidden = !show;
   $("#helpbtn").setAttribute("aria-expanded", show ? "true" : "false");
+  return true;
 }
 $("#help").append(
   h("h2", {text: "Keyboard shortcuts"}),
@@ -762,13 +779,21 @@ document.addEventListener("keydown", e => {
   const s = KEYMAP.get(key);
   if (!s || (e.repeat && !s.repeat)) return;
   const t = e.target;
+  // while the help is open it is modal for the keyboard: only ? and Esc work,
+  // and Esc closes it even from inside a field
+  if (helpOpen()) {
+    if (key !== "Escape" && key !== "?") return;
+    if (key === "?" && t.closest && t.closest("input, textarea, select, [contenteditable]")) return;
+    e.preventDefault();
+    s.run();
+    return;
+  }
   // never while typing, and not where the browser already gives the key a job
   if (t.closest && t.closest("input, textarea, select, [contenteditable]")) return;
   if (t.isContentEditable) return;
   if (key === " " && t.closest && t.closest("button, a[href], video, [role=button]")) return;
   if ((key === "ArrowUp" || key === "ArrowDown") && t.closest && t.closest("video")) return;
-  e.preventDefault();
-  s.run();
+  if (s.run() !== false) e.preventDefault();
 });
 
 async function rerun(jobId) {

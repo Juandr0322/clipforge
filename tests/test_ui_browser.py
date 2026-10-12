@@ -710,6 +710,85 @@ def test_trim_start_after_end_is_not_saved(env, fresh, page):
     assert _decisions(server, jid)[0] is None
 
 
+def test_selection_moves_to_the_neighbour_when_a_refresh_removes_it(env, fresh, page):
+    server, jid, job_dir = fresh
+    refined = job_dir / "refined.json"
+    original = refined.read_text()
+    _open_multi(page, server)
+    assert _visible(page) == BY_SCORE
+    page.keyboard.press("j")
+    page.keyboard.press("j")
+    assert _selected(page) == 1                 # third in score order
+    try:
+        data = json.loads(original)
+        data["clips"] = [c for c in data["clips"] if c["id"] != 1]
+        refined.write_text(json.dumps(data))
+        _refresh_now(page)
+        assert _visible(page) == [2, 0, 3]
+        assert _selected(page) == 3             # took the removed clip's place
+        data["clips"] = [c for c in data["clips"] if c["id"] != 3]
+        refined.write_text(json.dumps(data))
+        _refresh_now(page)
+        assert _visible(page) == [2, 0]
+        assert _selected(page) == 0             # none after it: the previous one
+    finally:
+        refined.write_text(original)
+
+
+def test_help_panel_is_modal_and_space_scrolls_without_a_selection(env, fresh, page):
+    server, jid, _ = fresh
+    _open_multi(page, server)
+    page.keyboard.press("?")
+    assert page.locator("#help").is_visible()
+    sel = _selected(page)
+    for key in ["a", "r", "j", "ArrowDown", "k", " ", "[", "]"]:
+        page.keyboard.press(key)
+    page.wait_for_timeout(300)
+    assert _selected(page) == sel
+    assert _decisions(server, jid) == {0: None, 1: None, 2: None, 3: None}
+    # Esc closes it even when the cursor is in a field
+    page.locator('.clip[data-clip="0"] [data-field="note"]').focus()
+    page.keyboard.press("Escape")
+    assert page.locator("#help").is_hidden()
+
+    # a key with nothing to act on keeps its normal job
+    page.locator("#detail .stagebar").click()
+    prevented = page.evaluate("""() => {
+        selected = null;
+        const ev = new KeyboardEvent('keydown', {key: ' ', bubbles: true, cancelable: true});
+        document.body.dispatchEvent(ev);
+        return ev.defaultPrevented;
+    }""")
+    assert prevented is False
+
+
+def test_keys_while_the_pane_is_loading_write_no_review(env, seeded, fresh, page):
+    server, jid, _ = fresh
+    a_id = jid
+    b_id = next(j["job_id"] for j in _get(server.base, "/api/jobs")
+                if j["filename"] == EVIL_NAME)
+    assert a_id != b_id
+    before = (_decisions(server, a_id), _decisions(server, b_id))
+
+    _open_multi(page, server)                   # job A, a clip selected
+    assert _selected(page) is not None
+
+    held = []                                   # B's detail response is held back
+    page.route(f"**/api/jobs/{b_id}", lambda route: held.append(route))
+    page.evaluate("id => document.querySelector(`.job[data-job=\"${id}\"]`).click()", b_id)
+    page.wait_for_timeout(300)
+    assert held, "the detail request should be pending"
+    assert page.locator("#detail .empty").inner_text() == "loading…"
+    for key in ["a", "r", "j", " "]:
+        page.keyboard.press(key)
+    assert page.locator("#detail .empty").inner_text() == "loading…"
+    held[0].continue_()
+    page.wait_for_selector(f'.clip[data-job="{b_id}"]', timeout=10000)
+    page.wait_for_timeout(500)
+    assert (_decisions(server, a_id), _decisions(server, b_id)) == before
+    assert page.locator(".toast.ok").count() == 0
+
+
 def test_inline_toasts_and_no_dialogs(env, seeded, page):
     server, _, _ = env
     page.goto(server.base)
