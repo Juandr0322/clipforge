@@ -3,7 +3,7 @@ pytest>=8.0
 pyflakes>=3.0
 faster-whisper>=1.0
 av<19  # required by faster-whisper; pinned because PyAV 19+ breaks its decoding/install
-anthropic>=0.40
+anthropic>=1.13,<2  # 1.x removed temperature and added workspace_id
 numpy>=1.26
 opencv-python-headless>=4.9,<5  # OpenCV 5 removed CascadeClassifier (haar fallback)
 fastapi>=0.110

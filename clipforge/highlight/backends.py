@@ -174,22 +174,20 @@ class AnthropicHighlighter(Highlighter):
                  examples_dir: Path | None = None, client=None):
         if client is None:
             import anthropic
-            headers = {}
-            ws = os.environ.get("ANTHROPIC_WORKSPACE_ID")  # optional; never logged
-            if ws:
-                headers["anthropic-workspace-id"] = ws
-            # reads ANTHROPIC_API_KEY
-            client = anthropic.Anthropic(default_headers=headers)
+            client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY
         self._client = client
+        # optional; sent as the SDK's native workspace_id argument, never logged
+        self._workspace_id = os.environ.get("ANTHROPIC_WORKSPACE_ID") or None
         self.model = model
         self.name = f"anthropic/{model}"
         self._system = build_system_prompt(load_examples(examples_dir))
 
     def analyze_chunk(self, chunk: Chunk, source_duration: float) -> list[dict]:
+        extra = ({"workspace_id": self._workspace_id}
+                 if self._workspace_id else {})
         resp = self._client.messages.create(
             model=self.model,
             max_tokens=2000,
-            temperature=0,  # keep run-to-run variation low
             system=self._system,
             messages=[{
                 "role": "user",
@@ -199,6 +197,7 @@ class AnthropicHighlighter(Highlighter):
                     f"{source_duration:.0f}s video):\n\n{chunk.render()}"
                 ),
             }],
+            **extra,
         )
         text = "".join(b.text for b in resp.content if b.type == "text")
         found = parse_llm_response(text, chunk, source_duration)
