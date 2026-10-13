@@ -238,7 +238,7 @@ def one_chunk() -> Chunk:
     return chunk_transcript(make_transcript(duration=600))[0]
 
 
-def test_anthropic_call_is_deterministic():
+def test_anthropic_call_uses_temperature_zero():
     client = FakeClient(GOOD_REPLY)
     hl = AnthropicHighlighter(client=client)
     assert len(hl.analyze_chunk(one_chunk(), 600.0)) == 1
@@ -274,9 +274,49 @@ def test_stage_runner_saves_raw_reply_in_job_dir(transcribed_job):
     hl = AnthropicHighlighter(client=FakeClient("not json"))
     highlight_job(transcribed_job, hl, force=True)
     assert (transcribed_job / "highlight_raw_chunk_000.txt").exists()
+    # re-running a done stage is a no-op: the debug file stays put
+    highlight_job(transcribed_job, MockHighlighter())
+    assert (transcribed_job / "highlight_raw_chunk_000.txt").exists()
     # a later forced run that parses fine clears the stale debug file
     highlight_job(transcribed_job, MockHighlighter(), force=True)
     assert not list(transcribed_job.glob("highlight_raw_chunk_*.txt"))
+
+
+@pytest.mark.parametrize("ws", ["ws_123", None])
+def test_workspace_header_only_when_env_set(monkeypatch, ws):
+    import sys
+    from types import SimpleNamespace
+    seen = {}
+    fake = SimpleNamespace(
+        Anthropic=lambda **kw: seen.update(kw) or SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "anthropic", fake)
+    if ws:
+        monkeypatch.setenv("ANTHROPIC_WORKSPACE_ID", ws)
+    else:
+        monkeypatch.delenv("ANTHROPIC_WORKSPACE_ID", raising=False)
+    AnthropicHighlighter()
+    expected = {"anthropic-workspace-id": ws} if ws else {}
+    assert seen["default_headers"] == expected
+
+
+def test_cli_prints_non_ascii_when_piped(transcribed_job):
+    """Piped stdout uses the locale code page on Windows unless the CLI
+    switches it to UTF-8; PYTHONUTF8 is cleared to prove it isn't needed."""
+    import json, os, sys
+    job = transcribed_job
+    tp = job / Manifest.load(job).transcript_path
+    data = json.loads(tp.read_text(encoding="utf-8"))
+    for seg in data["segments"]:
+        seg["text"] = "Nobody tells you this 🎬 — sí"
+    tp.write_text(json.dumps(data), encoding="utf-8")
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("PYTHONUTF8", "PYTHONIOENCODING")}
+    r = subprocess.run(
+        [sys.executable, "-m", "clipforge.cli", "highlight", job.name,
+         "--workspace", str(job.parent), "--engine", "mock", "--force"],
+        capture_output=True, env=env)
+    assert r.returncode == 0, r.stderr.decode("utf-8", "replace")
+    assert "🎬" in r.stdout.decode("utf-8")
 
 
 def test_examples_read_as_utf8(tmp_path):

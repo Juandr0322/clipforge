@@ -189,7 +189,7 @@ class AnthropicHighlighter(Highlighter):
         resp = self._client.messages.create(
             model=self.model,
             max_tokens=2000,
-            temperature=0,  # same transcript -> same clips, run to run
+            temperature=0,  # keep run-to-run variation as low as possible
             system=self._system,
             messages=[{
                 "role": "user",

@@ -4,7 +4,7 @@ Module 6 tests.
 Highlights:
   - caption sync: ASS times parsed back must match word timestamps ±20ms
   - REAL renders verified by ffprobe (1080x1920, audio, duration)
-  - moving-camera pixel test: render a hue-gradient source with a tracked
+  - moving-camera pixel test: render a red-left/blue-right source with a tracked
     crop path and verify the output's dominant color CHANGES over time —
     proving the sendcmd camera actually moves
   - loudness normalization measured with ffmpeg's analyzer
@@ -137,6 +137,11 @@ def test_filtergraph_leaves_posix_paths_alone():
                            ass_path=Path("/jobs/a/clip.ass"),
                            sendcmd_path=None)
     assert "ass='/jobs/a/clip.ass'" in vf
+    tracked = CropPath(clip_id=0, mode="tracked",
+                       keyframes=[CropKeyframe(t=0.0, cx=0.5)])
+    vf = build_filtergraph(CropGeometry.for_source(1920, 1080), tracked, 1920,
+                           ass_path=None, sendcmd_path=Path("/jobs/a/c.cmds"))
+    assert "sendcmd=f='/jobs/a/c.cmds'" in vf
 
 
 # ------------------------------------------------------------- real renders
@@ -204,7 +209,7 @@ def test_loudness_normalized(rendered_env):
 
 # --------------------------------------------- moving camera pixel proof
 
-def hue_gradient_video(path: Path, dur=12):
+def red_blue_split_video(path: Path, dur=12):
     """1280x720 video where color depends on X: left half red, right half
     blue. (Two flat colors side by side, not ffmpeg's `gradients` source:
     that one is randomly seeded, so the fixture differed from run to run.)"""
@@ -232,11 +237,11 @@ def mean_rb(video: Path, t: float) -> tuple[float, float]:
 
 
 def test_tracked_crop_actually_moves(tmp_path):
-    """Render with a left->right tracked path over a red->blue gradient.
+    """Render with a left->right tracked path over a red-left/blue-right source.
     Early output frames must be redder; late frames bluer. This proves the
     sendcmd-driven camera physically moved."""
     src = tmp_path / "grad.mp4"
-    hue_gradient_video(src)
+    red_blue_split_video(src)
     crop = CropPath(clip_id=0, mode="tracked", keyframes=[
         CropKeyframe(t=float(t), cx=0.15 + (0.7 / 10.0) * t)
         for t in range(11)])

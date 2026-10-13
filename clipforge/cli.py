@@ -17,6 +17,11 @@ DEFAULT_WS = Path.home() / "clipforge-workspace"
 
 
 def main() -> int:
+    # Hooks and transcript previews can hold emoji/accents; the default
+    # Windows code page can't encode them when output is piped or redirected.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     p = argparse.ArgumentParser(prog="clipforge")
     sub = p.add_subparsers(dest="cmd", required=True)
 

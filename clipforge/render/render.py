@@ -79,7 +79,8 @@ def write_sendcmd(path: Path, crop: CropPath, geom: CropGeometry,
 
 def _filter_path(path: Path) -> str:
     """Path as a filter option value: forward slashes, and ':' escaped —
-    otherwise ffmpeg reads the drive colon in C:/... as an option separator."""
+    otherwise ffmpeg reads the drive colon in C:/... as an option separator.
+    An apostrophe in the path is NOT handled (it ends the quoted value)."""
     return path.as_posix().replace(":", "\\:")
 
 

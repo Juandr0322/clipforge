@@ -49,8 +49,8 @@ class IngestError(Exception):
 # --------------------------------------------------------------------------
 
 def _run(cmd: list[str], timeout: int = 1800) -> subprocess.CompletedProcess:
-    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
-                       errors="replace", timeout=timeout)
+    proc = subprocess.run(cmd, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", timeout=timeout)
     if proc.returncode != 0:
         raise IngestError(
             f"Command failed ({cmd[0]}): {proc.stderr.strip()[-500:]}"
