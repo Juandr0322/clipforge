@@ -2,6 +2,7 @@
 <!-- Newest entry at the top. The lead adds one entry per feature attempt.
      Every agent reads the top of this file first, so keep entries to 1–2 lines. -->
 
+- 2026-10-13 · F24 · merged · highlight crashed on anthropic 1.x (temperature removed): dropped it, ANTHROPIC_WORKSPACE_ID now goes via native workspace_id arg, pinned anthropic>=1.13,<2, new test checks kwargs against the real Messages.create signature + LESSONS line. Review PASS first round. 295 tests + mock pipeline e2e OK. Next: F10 (rebase on this), F08.
 - 2026-10-13 · F23 · merged · PR #2 re-applied by hand: av<19 pin, Whisper CPU fallback on missing CUDA libs (GPU still used when it works), optional ANTHROPIC_WORKSPACE_ID header, temperature=0, raw reply saved + warning on 0-clip parse. Review FAIL fixed (debug I/O can't fail the stage, tighter CUDA match). 291 tests + mock pipeline e2e OK. Sandbox masked .env.* so Diego committed .env.example. Next: F08.
 - 2026-10-12 · F22 · merged · -vsync→-fps_mode (ffmpeg 8 removed it), ffmpeg version preflight (refuse <5.1), CI matrix distro+current ffmpeg, .gitattributes LF, LF example files. All 3 CI jobs green incl. windows-latest. 271 tests. F21 now passes too. Next: Diego tests on Windows, then F08.
 - 2026-10-12 · F21 · merged · UTF-8 on all text I/O + subprocess output, ffmpeg filter-path escaping (drive-letter colon), serve/ingest preflight (missing ffmpeg, busy port), Windows CI job. Review FAIL fixed. Windows CI exposed ffmpeg 8 incompatibility → F22.

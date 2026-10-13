@@ -30,3 +30,6 @@
 2026-10-13 | F23 | reviewer | MINOR | CPU fallback ignored caller's compute_type with no comment explaining why "auto"
 2026-10-13 | F23 | reviewer | QUESTION | no test that an unrelated error at model construction propagates
 2026-10-13 | F23 | reviewer | MINOR | round 2: .so/.dll match broader than CUDA; explicit device=cuda also falls back; av pin comment vague (left open)
+2026-10-13 | F24 | diego | MAJOR | F23 passed temperature=0 to messages.create; anthropic 1.x removed it, so highlighting crashed on Windows (fake client hid it)
+2026-10-13 | F24 | reviewer | MINOR | F24 notes not updated with why the temperature test was replaced (added at close-out)
+2026-10-13 | F24 | reviewer | MINOR | whitespace-only ANTHROPIC_WORKSPACE_ID would be passed as workspace_id (left open)
