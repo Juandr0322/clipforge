@@ -93,5 +93,8 @@ def run_pipeline(job_dir: Path, cfg: PipelineConfig,
         from clipforge.render.run import render_job
         m = render_job(job_dir, captions=cfg.captions)
 
+    from clipforge.quality.report import quality_job
+    quality_job(job_dir)  # idempotent: only creates missing reports
+
     progress("done")
     return m
