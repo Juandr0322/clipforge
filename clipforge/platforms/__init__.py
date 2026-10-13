@@ -1,10 +1,13 @@
 """Platform profiles: one hand-editable JSON file per platform.
 
 Later steps read these files through this module and hard-code none of the values.
+If the project is ever packaged, the profiles/*.json files must be declared as package data.
 """
 from __future__ import annotations
 
 import json
+import math
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -43,13 +46,25 @@ def _fail(path: Path, field: str, msg: str):
     raise ProfileError(f"{path.name}: field '{field}' {msg}")
 
 
-def _num(path: Path, data: dict, key: str, parent: str = ""):
+def _obj(path: Path, data: dict, key: str) -> dict:
+    if key not in data:
+        _fail(path, key, "is missing")
+    if not isinstance(data[key], dict):
+        _fail(path, key, "must be an object")
+    return data[key]
+
+
+def _num(path: Path, data: dict, key: str, parent: str = "", integer: bool = False):
     label = f"{parent}.{key}" if parent else key
-    if not isinstance(data, dict) or key not in data:
+    if key not in data:
         _fail(path, label, "is missing")
     v = data[key]
     if isinstance(v, bool) or not isinstance(v, (int, float)):
         _fail(path, label, "must be a number")
+    if integer and not isinstance(v, int):
+        _fail(path, label, "must be a whole number")
+    if not math.isfinite(v):
+        _fail(path, label, "must be a finite number")
     return v
 
 
@@ -71,38 +86,39 @@ def load_profile_file(path: Path) -> Profile:
         raise ProfileError(f"{path.name}: top level must be an object")
 
     name = _text(path, data, "name")
+    if name != path.stem:
+        _fail(path, "name", f"must match the file name '{path.stem}'")
     tier = _text(path, data, "tier")
     if tier not in TIERS:
         _fail(path, "tier", f"must be one of {', '.join(TIERS)}")
     max_len = _num(path, data, "max_length_s")
     if max_len <= 0:
         _fail(path, "max_length_s", "must be positive")
-    if "target_length_s" not in data:
-        _fail(path, "target_length_s", "is missing")
-    tmin = _num(path, data["target_length_s"], "min", "target_length_s")
-    tmax = _num(path, data["target_length_s"], "max", "target_length_s")
+    target = _obj(path, data, "target_length_s")
+    tmin = _num(path, target, "min", "target_length_s")
+    tmax = _num(path, target, "max", "target_length_s")
     if tmin <= 0 or tmin > tmax:
         _fail(path, "target_length_s", "needs 0 < min <= max")
     if tmax > max_len:
         _fail(path, "target_length_s.max", "is above max_length_s")
-    if "output_size" not in data:
-        _fail(path, "output_size", "is missing")
-    w = _num(path, data["output_size"], "width", "output_size")
-    h = _num(path, data["output_size"], "height", "output_size")
+    size = _obj(path, data, "output_size")
+    w = _num(path, size, "width", "output_size", integer=True)
+    h = _num(path, size, "height", "output_size", integer=True)
     if (w, h) != (FRAME_W, FRAME_H):
         _fail(path, "output_size", f"must be {FRAME_W}x{FRAME_H}")
-    if "safe_zone" not in data:
-        _fail(path, "safe_zone", "is missing")
-    sz = data["safe_zone"]
-    x, y, sw, sh = (_num(path, sz, k, "safe_zone") for k in ("x", "y", "width", "height"))
+    sz = _obj(path, data, "safe_zone")
+    x, y, sw, sh = (_num(path, sz, k, "safe_zone", integer=True) for k in ("x", "y", "width", "height"))
     if sw <= 0 or sh <= 0:
         _fail(path, "safe_zone", "must have positive width and height")
     if x < 0 or y < 0 or x + sw > w or y + sh > h:
         _fail(path, "safe_zone", f"is outside the {w}x{h} frame")
+    checked = _text(path, data, "checked")
+    if checked != "unverified" and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", checked):
+        _fail(path, "checked", "must be a YYYY-MM-DD date or 'unverified'")
     return Profile(
         name=name, tier=tier, max_length_s=max_len, target_min_s=tmin, target_max_s=tmax,
-        width=int(w), height=int(h), safe_zone=Rect(int(x), int(y), int(sw), int(sh)),
-        checked=_text(path, data, "checked"), source=_text(path, data, "source"),
+        width=w, height=h, safe_zone=Rect(x, y, sw, sh),
+        checked=checked, source=_text(path, data, "source"),
     )
 
 

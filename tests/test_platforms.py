@@ -88,3 +88,52 @@ def test_side_tier_does_not_affect_shared_zone(pdir):
     base = shared_safe_zone(pdir)
     _edit(pdir, "x", lambda d: d["safe_zone"].update(x=500, width=500))
     assert shared_safe_zone(pdir) == base
+
+
+def _raw(d, name, text):
+    (d / f"{name}.json").write_text(text, encoding="utf-8")
+
+
+@pytest.mark.parametrize("bad", ["NaN", "Infinity", "-Infinity"])
+@pytest.mark.parametrize("path,field", [
+    (("safe_zone", "x"), "safe_zone.x"),
+    (("safe_zone", "height"), "safe_zone.height"),
+    (("max_length_s",), "max_length_s"),
+    (("target_length_s", "min"), "target_length_s.min"),
+    (("target_length_s", "max"), "target_length_s.max"),
+])
+def test_non_finite_numbers_rejected(pdir, bad, path, field):
+    data = json.loads((pdir / "reels.json").read_text(encoding="utf-8"))
+    node = data
+    for k in path[:-1]:
+        node = node[k]
+    node[path[-1]] = "@@"
+    _raw(pdir, "reels", json.dumps(data).replace('"@@"', bad))
+    with pytest.raises(ProfileError) as e:
+        load_profile("reels", pdir)
+    assert "reels.json" in str(e.value) and f"'{field}'" in str(e.value)
+
+
+@pytest.mark.parametrize("mutate,field", [
+    (lambda d: d["safe_zone"].update(x=60.5), "safe_zone.x"),
+    (lambda d: d["output_size"].update(width=1080.5), "output_size.width"),
+    (lambda d: d.update(name="tiktok"), "name"),
+    (lambda d: d.update(target_length_s=5), "target_length_s"),
+    (lambda d: d.update(safe_zone=[1, 2]), "safe_zone"),
+    (lambda d: d.update(output_size="big"), "output_size"),
+    (lambda d: d.update(checked="yesterday"), "checked"),
+    (lambda d: d.update(checked="2026-13"), "checked"),
+])
+def test_other_invalid_fields(pdir, mutate, field):
+    _edit(pdir, "reels", mutate)
+    with pytest.raises(ProfileError) as e:
+        load_profile("reels", pdir)
+    msg = str(e.value)
+    assert "reels.json" in msg and f"'{field}'" in msg
+    assert ".min' is missing" not in msg and ".width' is missing" not in msg
+
+
+@pytest.mark.parametrize("value", ["unverified", "2026-10-13"])
+def test_checked_accepts_date_or_unverified(pdir, value):
+    _edit(pdir, "reels", lambda d: d.update(checked=value))
+    assert load_profile("reels", pdir).checked == value
