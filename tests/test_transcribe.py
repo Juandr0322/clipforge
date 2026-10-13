@@ -158,3 +158,137 @@ def test_factory():
     assert isinstance(get_transcriber("mock"), MockTranscriber)
     with pytest.raises(ValueError):
         get_transcriber("nonsense")
+
+
+# ------------------------------------------- requirements + CUDA fallback
+
+def test_requirements_pin_av_below_19():
+    import re
+    text = (Path(__file__).parent.parent / "requirements.txt").read_text(
+        encoding="utf-8")
+    line = next((ln for ln in text.splitlines()
+                 if re.match(r"\s*av\s*<\s*19\b", ln)), None)
+    assert line is not None, "requirements.txt must pin av<19"
+    assert "faster-whisper" in line and "#" in line
+
+
+class _Seg:
+    def __init__(self, i):
+        self.text, self.start, self.end = f" w{i} ", float(i), i + 0.5
+        self.words = [type("W", (), {"word": f"w{i}", "start": float(i),
+                                     "end": i + 0.4, "probability": 0.9})()]
+
+
+class _Info:
+    language = "en"
+
+
+def _install_fake_whisper(monkeypatch, behaviour):
+    """behaviour(device, stage) may raise; stage is 'init'|'call'|'iter'."""
+    import sys
+    import types
+    created = []
+
+    class FakeModel:
+        def __init__(self, size, device="auto", compute_type="auto"):
+            self.device = device
+            created.append(device)
+            behaviour(device, "init")
+
+        def transcribe(self, path, **kw):
+            behaviour(self.device, "call")
+
+            def gen():
+                yield _Seg(0)
+                behaviour(self.device, "iter")
+                yield _Seg(1)
+            return gen(), _Info()
+
+    mod = types.ModuleType("faster_whisper")
+    mod.WhisperModel = FakeModel
+    monkeypatch.setitem(sys.modules, "faster_whisper", mod)
+    return created
+
+
+@pytest.fixture
+def tiny_wav(tmp_path):
+    import wave
+    p = tmp_path / "a.wav"
+    with wave.open(str(p), "wb") as f:
+        f.setnchannels(1)
+        f.setsampwidth(2)
+        f.setframerate(16000)
+        f.writeframes(b"\x00\x00" * 16000 * 5)
+    return p
+
+
+def _make(monkeypatch, behaviour):
+    from clipforge.transcribe.backends import FasterWhisperTranscriber
+    created = _install_fake_whisper(monkeypatch, behaviour)
+    return FasterWhisperTranscriber(), created
+
+
+CUDA_ERR = RuntimeError("Library libcublas.so.12 is not found or cannot be loaded")
+
+
+def test_whisper_auto_works_no_retry_no_warning(monkeypatch, tiny_wav, capsys):
+    t, created = _make(monkeypatch, lambda d, s: None)
+    tr = t.transcribe(tiny_wav)
+    assert created == ["auto"] and len(tr.segments) == 2
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("fail_at", ["init", "call", "iter"])
+def test_whisper_falls_back_to_cpu_on_cuda_library_error(
+        monkeypatch, tiny_wav, capsys, fail_at):
+    def behaviour(device, stage):
+        if device == "auto" and stage == fail_at:
+            raise CUDA_ERR
+    t, created = _make(monkeypatch, behaviour)
+    tr = t.transcribe(tiny_wav)
+    assert created == ["auto", "cpu"]
+    assert [s.text for s in tr.segments] == ["w0", "w1"]   # no duplicates
+    assert len(tr.words) == 2
+    err = capsys.readouterr().err.strip().splitlines()
+    assert len(err) == 1 and "CPU" in err[0]
+
+
+@pytest.mark.parametrize("exc", [ValueError("bad"),
+                                 RuntimeError("out of memory")])
+def test_whisper_unrelated_error_propagates(monkeypatch, tiny_wav, capsys, exc):
+    def behaviour(device, stage):
+        if stage == "iter":
+            raise exc
+    t, created = _make(monkeypatch, behaviour)
+    with pytest.raises(type(exc)):
+        t.transcribe(tiny_wav)
+    assert created == ["auto"]
+    assert capsys.readouterr().err == ""
+
+
+def test_whisper_model_cannot_be_loaded_is_not_a_cuda_error(
+        monkeypatch, tiny_wav):
+    def behaviour(device, stage):
+        if stage == "call":
+            raise RuntimeError("model file cannot be loaded")
+    t, created = _make(monkeypatch, behaviour)
+    with pytest.raises(RuntimeError, match="cannot be loaded"):
+        t.transcribe(tiny_wav)
+    assert created == ["auto"]
+
+
+def test_whisper_construction_unrelated_error_propagates(monkeypatch, capsys):
+    from clipforge.transcribe.backends import FasterWhisperTranscriber
+    created = _install_fake_whisper(
+        monkeypatch, lambda d, s: (_ for _ in ()).throw(ValueError("bad"))
+        if s == "init" else None)
+    with pytest.raises(ValueError):
+        FasterWhisperTranscriber()
+    assert created == ["auto"] and capsys.readouterr().err == ""
+
+
+def test_whisper_so_and_dll_names_count_as_cuda_errors():
+    from clipforge.transcribe.backends import is_cuda_library_error
+    assert is_cuda_library_error(RuntimeError("Library libcudnn_ops.so.9 not found"))
+    assert is_cuda_library_error(RuntimeError("cublas64_12.dll is missing"))
+    assert is_cuda_library_error(RuntimeError("libfoo.so.1 cannot be loaded"))

@@ -12,6 +12,7 @@ import abc
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
 from clipforge.highlight.chunker import Chunk, chunk_transcript
@@ -19,6 +20,10 @@ from clipforge.highlight.schema import (
     MAX_CLIP_SEC, MIN_CLIP_SEC, CandidateSet, ClipCandidate, dedup,
 )
 from clipforge.transcribe.schema import Transcript
+
+# Debug file written to the job dir when a chunk's reply yields no clips.
+RAW_REPLY_NAME = "highlight_raw_chunk_{index:03d}.txt"
+RAW_REPLY_GLOB = "highlight_raw_chunk_*.txt"
 
 SYSTEM_PROMPT = """You are an expert short-form video editor. You find the \
 moments in long-form video transcripts that would perform as standalone \
@@ -133,6 +138,9 @@ def parse_llm_response(text: str, chunk: Chunk,
 
 class Highlighter(abc.ABC):
     name: str = "base"
+    # Set by the stage runner to the job dir; backends may drop debug files
+    # there (e.g. raw LLM replies that yielded nothing).
+    debug_dir: Path | None = None
 
     @abc.abstractmethod
     def analyze_chunk(self, chunk: Chunk, source_duration: float) -> list[dict]:
@@ -163,9 +171,16 @@ class AnthropicHighlighter(Highlighter):
     """
 
     def __init__(self, model: str = "claude-sonnet-4-6",
-                 examples_dir: Path | None = None):
-        import anthropic
-        self._client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY
+                 examples_dir: Path | None = None, client=None):
+        if client is None:
+            import anthropic
+            headers = {}
+            ws = os.environ.get("ANTHROPIC_WORKSPACE_ID")  # optional; never logged
+            if ws:
+                headers["anthropic-workspace-id"] = ws
+            # reads ANTHROPIC_API_KEY
+            client = anthropic.Anthropic(default_headers=headers)
+        self._client = client
         self.model = model
         self.name = f"anthropic/{model}"
         self._system = build_system_prompt(load_examples(examples_dir))
@@ -174,6 +189,7 @@ class AnthropicHighlighter(Highlighter):
         resp = self._client.messages.create(
             model=self.model,
             max_tokens=2000,
+            temperature=0,  # keep run-to-run variation low
             system=self._system,
             messages=[{
                 "role": "user",
@@ -185,7 +201,25 @@ class AnthropicHighlighter(Highlighter):
             }],
         )
         text = "".join(b.text for b in resp.content if b.type == "text")
-        return parse_llm_response(text, chunk, source_duration)
+        found = parse_llm_response(text, chunk, source_duration)
+        if not found:
+            self._report_empty(chunk, text)
+        return found
+
+    def _report_empty(self, chunk: Chunk, text: str) -> None:
+        """Zero clips can be an honest [] or an unparsable reply; keep the
+        raw text so the two can be told apart. stderr only, never HTTP."""
+        where = "raw reply not saved"
+        if self.debug_dir is not None:
+            name = RAW_REPLY_NAME.format(index=chunk.index)
+            try:
+                (self.debug_dir / name).write_text(text, encoding="utf-8")
+                where = f"raw reply saved as {name}"
+            except OSError:
+                where = f"could not save {name}"
+        print(f"[highlight] WARNING: chunk {chunk.index} "
+              f"({chunk.start:.0f}s-{chunk.end:.0f}s) parsed to 0 clips; "
+              f"{where}", file=sys.stderr)
 
 
 class MockHighlighter(Highlighter):

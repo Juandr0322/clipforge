@@ -8,6 +8,8 @@ mock in tests — with zero changes anywhere else in the pipeline.
 from __future__ import annotations
 
 import abc
+import re
+import sys
 import wave
 from pathlib import Path
 
@@ -25,6 +27,15 @@ class Transcriber(abc.ABC):
     @abc.abstractmethod
     def transcribe(self, wav_path: Path) -> Transcript:
         """16 kHz mono WAV in -> validated Transcript out."""
+
+
+_CUDA_LIB_ERROR = re.compile(
+    r"cublas|cudnn|\blib[\w.+-]*\.so\b|\b[\w.+-]+\.dll\b", re.I)
+
+
+def is_cuda_library_error(exc: BaseException) -> bool:
+    """True for the 'GPU libraries missing' failure, not for real bugs."""
+    return isinstance(exc, RuntimeError) and bool(_CUDA_LIB_ERROR.search(str(exc)))
 
 
 # ---------------------------------------------------------------------------
@@ -47,12 +58,37 @@ class FasterWhisperTranscriber(Transcriber):
         self.model_size = model_size
         self.language = language
         self.name = f"faster-whisper/{model_size}"
+        self.device = device
         # Lazy import so the rest of the pipeline doesn't require the package
         from faster_whisper import WhisperModel
-        self._model = WhisperModel(model_size, device=device,
-                                   compute_type=compute_type)
+        self._model_cls = WhisperModel
+        try:
+            self._model = WhisperModel(model_size, device=device,
+                                       compute_type=compute_type)
+        except RuntimeError as e:
+            if device == "cpu" or not is_cuda_library_error(e):
+                raise
+            self._fall_back_to_cpu()
+
+    def _fall_back_to_cpu(self) -> None:
+        print("[transcribe] CUDA libraries not found, falling back to CPU",
+              file=sys.stderr)
+        self.device = "cpu"
+        # "auto" picks a CPU-valid type; a GPU-only one (float16) would fail here
+        self._model = self._model_cls(self.model_size, device="cpu",
+                                      compute_type="auto")
 
     def transcribe(self, wav_path: Path) -> Transcript:
+        try:
+            return self._transcribe_once(wav_path)
+        except RuntimeError as e:
+            if self.device == "cpu" or not is_cuda_library_error(e):
+                raise
+        # Rerun from scratch on CPU; nothing from the failed pass is kept.
+        self._fall_back_to_cpu()
+        return self._transcribe_once(wav_path)
+
+    def _transcribe_once(self, wav_path: Path) -> Transcript:
         duration = wav_duration(wav_path)
         seg_iter, info = self._model.transcribe(
             str(wav_path),

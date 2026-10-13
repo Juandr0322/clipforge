@@ -223,3 +223,169 @@ def test_factory_anthropic_requires_key(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
         get_highlighter("anthropic")
+
+
+# ------------------------------------- client, temperature, raw-reply debug
+
+import json  # noqa: E402
+import shutil  # noqa: E402
+import sys  # noqa: E402
+import types  # noqa: E402
+
+from clipforge.highlight.backends import (  # noqa: E402
+    RAW_REPLY_GLOB, AnthropicHighlighter,
+)
+
+
+class FakeClient:
+    """Records messages.create kwargs; replies come from a list (last repeats)."""
+    def __init__(self, replies):
+        self.replies, self.calls = list(replies), []
+        self.messages = self
+
+    def create(self, **kw):
+        self.calls.append(kw)
+        r = self.replies.pop(0) if len(self.replies) > 1 else self.replies[0]
+        return types.SimpleNamespace(
+            content=[types.SimpleNamespace(type="text", text=r)])
+
+
+GOOD = json.dumps([{"start": 0, "end": 30, "score": 90, "hook": "h",
+                    "reason": "r", "type": "story"}])
+
+
+def _chunk():
+    return chunk_transcript(make_transcript(duration=100.0))[0]
+
+
+@pytest.mark.parametrize("ws", ["ws-123", None])
+def test_workspace_header(monkeypatch, ws):
+    seen = {}
+
+    class FakeAnthropic:
+        def __init__(self, **kw):
+            seen.update(kw)
+    mod = types.ModuleType("anthropic")
+    mod.Anthropic = FakeAnthropic
+    monkeypatch.setitem(sys.modules, "anthropic", mod)
+    if ws:
+        monkeypatch.setenv("ANTHROPIC_WORKSPACE_ID", ws)
+    else:
+        monkeypatch.delenv("ANTHROPIC_WORKSPACE_ID", raising=False)
+    AnthropicHighlighter()
+    expected = {"anthropic-workspace-id": ws} if ws else {}
+    assert seen["default_headers"] == expected
+
+
+def test_workspace_id_never_printed(monkeypatch, capsys):
+    mod = types.ModuleType("anthropic")
+    mod.Anthropic = lambda **kw: object()
+    monkeypatch.setitem(sys.modules, "anthropic", mod)
+    monkeypatch.setenv("ANTHROPIC_WORKSPACE_ID", "secret-ws-id")
+    AnthropicHighlighter()
+    out = capsys.readouterr()
+    assert "secret-ws-id" not in out.out + out.err
+
+
+def test_temperature_zero_on_every_call():
+    c = FakeClient([GOOD])
+    h = AnthropicHighlighter(client=c)
+    h.analyze_chunk(_chunk(), 100.0)
+    h.analyze_chunk(_chunk(), 100.0)
+    assert len(c.calls) == 2 and all(k["temperature"] == 0 for k in c.calls)
+
+
+def test_empty_reply_saved_with_debug_dir(tmp_path, capsys):
+    reply = "Désolé, pas de clips — 日本語 \U0001F600"
+    h = AnthropicHighlighter(client=FakeClient([reply]))
+    h.debug_dir = tmp_path
+    ch = _chunk()
+    assert h.analyze_chunk(ch, 100.0) == []
+    f = tmp_path / f"highlight_raw_chunk_{ch.index:03d}.txt"
+    assert f.read_bytes() == reply.encode("utf-8")
+    err = capsys.readouterr().err
+    assert "WARNING" in err and f.name in err and f"chunk {ch.index}" in err
+    assert f"{ch.start:.0f}s-{ch.end:.0f}s" in err
+
+
+def test_empty_reply_without_debug_dir_only_warns(tmp_path, capsys):
+    h = AnthropicHighlighter(client=FakeClient(["nope"]))
+    assert h.analyze_chunk(_chunk(), 100.0) == []
+    assert "raw reply not saved" in capsys.readouterr().err
+    assert not list(tmp_path.iterdir())
+
+
+def test_good_reply_saves_nothing(tmp_path, capsys):
+    h = AnthropicHighlighter(client=FakeClient([GOOD]))
+    h.debug_dir = tmp_path
+    assert len(h.analyze_chunk(_chunk(), 100.0)) == 1
+    assert not list(tmp_path.iterdir())
+    assert capsys.readouterr().err == ""
+
+
+def test_stage_keeps_debug_files_and_clears_stale(transcribed_job, tmp_path):
+    job = tmp_path / "job"
+    shutil.copytree(transcribed_job, job)
+    m1 = highlight_job(job, AnthropicHighlighter(client=FakeClient(["garbage"])),
+                       force=True)
+    raws = sorted(job.glob(RAW_REPLY_GLOB))
+    assert raws and m1.stage == Stage.CANDIDATES_READY
+    assert raws[0].read_text(encoding="utf-8") == "garbage"
+    assert Manifest.load(job).stage == Stage.CANDIDATES_READY
+    # no-op rerun leaves them in place
+    highlight_job(job, AnthropicHighlighter(client=FakeClient([GOOD])))
+    assert sorted(job.glob(RAW_REPLY_GLOB)) == raws
+    # forced run with a good reply removes stale debug files
+    highlight_job(job, AnthropicHighlighter(client=FakeClient([GOOD])),
+                  force=True)
+    assert not list(job.glob(RAW_REPLY_GLOB))
+
+
+def _stage_job(transcribed_job, tmp_path):
+    job = tmp_path / "job"
+    shutil.copytree(transcribed_job, job)
+    return job
+
+
+def test_debug_write_failure_does_not_fail_stage(
+        transcribed_job, tmp_path, monkeypatch, capsys):
+    job = _stage_job(transcribed_job, tmp_path)
+    secret = str(tmp_path)
+
+    real = Path.write_text
+
+    def boom(self, *a, **k):
+        if self.name.startswith("highlight_raw_chunk_"):
+            raise PermissionError(13, "denied", str(self))
+        return real(self, *a, **k)
+    monkeypatch.setattr(Path, "write_text", boom)
+    h =AnthropicHighlighter(client=FakeClient(["garbage"]))
+    m = highlight_job(job, h, force=True)
+    monkeypatch.undo()
+    assert m.stage == Stage.CANDIDATES_READY
+    assert (job / "candidates.json").exists()
+    assert not Manifest.load(job).history[-1].error
+    err = capsys.readouterr().err
+    assert "could not save" in err and secret not in err
+
+
+def test_stale_unlink_failure_does_not_fail_stage(
+        transcribed_job, tmp_path, monkeypatch, capsys):
+    job = _stage_job(transcribed_job, tmp_path)
+    (job / "highlight_raw_chunk_000.txt").write_text("old", encoding="utf-8")
+
+    real = Path.unlink
+
+    def boom(self, *a, **k):
+        if self.name.startswith("highlight_raw_chunk_"):
+            raise PermissionError(13, "denied", str(self))
+        return real(self, *a, **k)
+    monkeypatch.setattr(Path, "unlink", boom)
+    m = highlight_job(job, MockHighlighter(), force=True)
+    monkeypatch.undo()
+    assert m.stage == Stage.CANDIDATES_READY
+    assert (job / "candidates.json").exists()
+    assert not Manifest.load(job).history[-1].error
+    err = capsys.readouterr().err
+    assert "could not remove highlight_raw_chunk_000.txt" in err
+    assert str(tmp_path) not in err
