@@ -6,7 +6,8 @@ import pytest
 
 from clipforge.common.manifest import Manifest, Stage
 from clipforge.highlight.backends import (
-    MockHighlighter, build_system_prompt, get_highlighter, parse_llm_response,
+    AnthropicHighlighter, MockHighlighter, build_system_prompt,
+    get_highlighter, load_examples, parse_llm_response,
 )
 from clipforge.highlight.chunker import Chunk, chunk_transcript
 from clipforge.highlight.run import HighlightError, highlight_job
@@ -211,6 +212,76 @@ def test_stage_runner_idempotent(transcribed_job):
     m1 = highlight_job(transcribed_job, MockHighlighter())
     m2 = highlight_job(transcribed_job, MockHighlighter())
     assert len(m2.history) == len(m1.history)
+
+
+# ------------------------------------------- anthropic backend (fake client)
+
+class FakeClient:
+    """Stands in for anthropic.Anthropic: canned reply, records the call."""
+
+    def __init__(self, reply: str):
+        self.reply, self.calls = reply, []
+        self.messages = self
+
+    def create(self, **kwargs):
+        from types import SimpleNamespace
+        self.calls.append(kwargs)
+        return SimpleNamespace(
+            content=[SimpleNamespace(type="text", text=self.reply)])
+
+
+GOOD_REPLY = ('[{"start": 100, "end": 140, "score": 85, "hook": "h", '
+              '"reason": "r", "type": "story"}]')
+
+
+def one_chunk() -> Chunk:
+    return chunk_transcript(make_transcript(duration=600))[0]
+
+
+def test_anthropic_call_is_deterministic():
+    client = FakeClient(GOOD_REPLY)
+    hl = AnthropicHighlighter(client=client)
+    assert len(hl.analyze_chunk(one_chunk(), 600.0)) == 1
+    assert client.calls[0]["temperature"] == 0
+
+
+def test_empty_parse_saves_raw_reply_and_warns(tmp_path, capsys):
+    reply = "Sorry, nothing here — señal débil 🎬"   # non-ASCII on purpose
+    hl = AnthropicHighlighter(client=FakeClient(reply))
+    hl.debug_dir = tmp_path
+    assert hl.analyze_chunk(one_chunk(), 600.0) == []
+    saved = tmp_path / "highlight_raw_chunk_000.txt"
+    assert saved.read_text(encoding="utf-8") == reply
+    err = capsys.readouterr().err
+    assert "WARNING" in err and "0 clips" in err and saved.name in err
+
+
+def test_empty_parse_without_job_dir_only_warns(capsys):
+    hl = AnthropicHighlighter(client=FakeClient("[]"))
+    assert hl.analyze_chunk(one_chunk(), 600.0) == []
+    assert "not saved" in capsys.readouterr().err
+
+
+def test_good_reply_saves_nothing(tmp_path, capsys):
+    hl = AnthropicHighlighter(client=FakeClient(GOOD_REPLY))
+    hl.debug_dir = tmp_path
+    hl.analyze_chunk(one_chunk(), 600.0)
+    assert list(tmp_path.iterdir()) == []
+    assert capsys.readouterr().err == ""
+
+
+def test_stage_runner_saves_raw_reply_in_job_dir(transcribed_job):
+    hl = AnthropicHighlighter(client=FakeClient("not json"))
+    highlight_job(transcribed_job, hl, force=True)
+    assert (transcribed_job / "highlight_raw_chunk_000.txt").exists()
+    # a later forced run that parses fine clears the stale debug file
+    highlight_job(transcribed_job, MockHighlighter(), force=True)
+    assert not list(transcribed_job.glob("highlight_raw_chunk_*.txt"))
+
+
+def test_examples_read_as_utf8(tmp_path):
+    (tmp_path / "a.txt").write_bytes("¿Nadie te dice esto? — sí 🎬".encode())
+    assert "¿Nadie te dice esto? — sí 🎬" in load_examples(tmp_path)
 
 
 # ------------------------------------------------------------------ factory

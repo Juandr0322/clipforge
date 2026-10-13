@@ -48,7 +48,7 @@ def render_job(job_dir: str | Path, force: bool = False,
             if captions:
                 cards = group_words(t.words, clip.start, clip.end)
                 ass_path = renders / f"clip_{clip.id:03d}.ass"
-                ass_path.write_text(to_ass(cards, style))
+                ass_path.write_text(to_ass(cards, style), encoding="utf-8")
             crop = CropPath.load(crops_dir / f"clip_{clip.id:03d}.json")
             render_clip(
                 norm, out, clip.start, clip.end, crop,

@@ -42,7 +42,7 @@ class FasterWhisperTranscriber(Transcriber):
     First run downloads the model from Hugging Face (~500MB for small).
     """
 
-    def __init__(self, model_size: str = "small", device: str = "auto",
+    def __init__(self, model_size: str = "small", device: str = "cpu",
                  compute_type: str = "auto", language: str | None = None):
         self.model_size = model_size
         self.language = language

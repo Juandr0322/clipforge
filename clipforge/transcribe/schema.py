@@ -89,9 +89,9 @@ class Transcript(BaseModel):
     # ---------- persistence ----------
     def save(self, path: Path) -> None:
         tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(self.model_dump_json(indent=2))
+        tmp.write_text(self.model_dump_json(indent=2), encoding="utf-8")
         tmp.replace(path)
 
     @classmethod
     def load(cls, path: Path) -> "Transcript":
-        return cls.model_validate_json(path.read_text())
+        return cls.model_validate_json(path.read_text(encoding="utf-8"))

@@ -26,8 +26,8 @@ from clipforge.render.captions import (
     CaptionStyle, group_words, parse_ass_times, to_ass,
 )
 from clipforge.render.render import (
-    CropGeometry, RenderError, crop_x_px, measure_loudness, render_clip,
-    verify_render,
+    CropGeometry, RenderError, build_filtergraph, crop_x_px,
+    measure_loudness, render_clip, verify_render,
 )
 from clipforge.render.run import render_job
 from clipforge.transcribe.backends import MockTranscriber
@@ -117,6 +117,28 @@ def test_crop_x_clamped():
     assert crop_x_px(0.5, 1920, 608) == pytest.approx(656, abs=1)
 
 
+def test_filtergraph_escapes_windows_drive_colon():
+    """ffmpeg splits filter options on ':', so the drive colon in C:/...
+    has to be backslash-escaped."""
+    from pathlib import PureWindowsPath
+    crop = CropPath(clip_id=0, mode="tracked",
+                    keyframes=[CropKeyframe(t=0.0, cx=0.5)])
+    vf = build_filtergraph(
+        CropGeometry.for_source(1920, 1080), crop, 1920,
+        ass_path=PureWindowsPath("C:/jobs/a/clip.ass"),
+        sendcmd_path=PureWindowsPath("C:/jobs/a/clip.cmds"))
+    assert r"sendcmd=f='C\:/jobs/a/clip.cmds'" in vf
+    assert r"ass='C\:/jobs/a/clip.ass'" in vf
+
+
+def test_filtergraph_leaves_posix_paths_alone():
+    crop = CropPath(clip_id=0, mode="center", keyframes=[])
+    vf = build_filtergraph(CropGeometry.for_source(1920, 1080), crop, 1920,
+                           ass_path=Path("/jobs/a/clip.ass"),
+                           sendcmd_path=None)
+    assert "ass='/jobs/a/clip.ass'" in vf
+
+
 # ------------------------------------------------------------- real renders
 
 @pytest.fixture(scope="module")
@@ -183,12 +205,16 @@ def test_loudness_normalized(rendered_env):
 # --------------------------------------------- moving camera pixel proof
 
 def hue_gradient_video(path: Path, dur=12):
-    """1280x720 video where color depends on X: left=red, right=blue."""
+    """1280x720 video where color depends on X: left half red, right half
+    blue. (Two flat colors side by side, not ffmpeg's `gradients` source:
+    that one is randomly seeded, so the fixture differed from run to run.)"""
     subprocess.run([
-        "ffmpeg", "-y", "-f", "lavfi",
-        "-i", f"gradients=size=1280x720:duration={dur}:rate=30:"
-              f"c0=red:c1=blue:x0=0:y0=360:x1=1280:y1=360:speed=0.00001",
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", f"color=red:size=640x720:duration={dur}:rate=30",
+        "-f", "lavfi", "-i", f"color=blue:size=640x720:duration={dur}:rate=30",
         "-f", "lavfi", "-i", f"sine=frequency=300:duration={dur}",
+        "-filter_complex", "[0:v][1:v]hstack[v]",
+        "-map", "[v]", "-map", "2:a",
         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-shortest", str(path)],
         check=True, capture_output=True)

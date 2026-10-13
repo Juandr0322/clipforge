@@ -49,13 +49,13 @@ def load_reviews(job_dir: Path) -> ReviewSet:
     p = reviews_path(job_dir)
     if not p.exists():
         return ReviewSet()
-    return ReviewSet.model_validate_json(p.read_text())
+    return ReviewSet.model_validate_json(p.read_text(encoding="utf-8"))
 
 
 def save_reviews(job_dir: Path, rs: ReviewSet) -> None:
     p = reviews_path(job_dir)
     tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(rs.model_dump_json(indent=2))
+    tmp.write_text(rs.model_dump_json(indent=2), encoding="utf-8")
     tmp.replace(p)
 
 
@@ -138,6 +138,6 @@ def export_examples(job_dir: Path, examples_dir: Path,
         if r.note:
             body += f"reviewer note: {r.note}\n"
         out = examples_dir / f"{m.job_id}_clip{c.id:03d}.txt"
-        out.write_text(body)
+        out.write_text(body, encoding="utf-8")
         written.append(out)
     return written

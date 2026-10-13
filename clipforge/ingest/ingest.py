@@ -49,7 +49,8 @@ class IngestError(Exception):
 # --------------------------------------------------------------------------
 
 def _run(cmd: list[str], timeout: int = 1800) -> subprocess.CompletedProcess:
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", timeout=timeout)
     if proc.returncode != 0:
         raise IngestError(
             f"Command failed ({cmd[0]}): {proc.stderr.strip()[-500:]}"
@@ -172,7 +173,7 @@ def normalize(src: Path, dst: Path, pr: ProbeResult) -> tuple[float, int, int]:
         "ffmpeg", "-y", "-i", str(src),
         "-map", "0:v:0", "-map", "0:a:0",
         "-vf", f"scale={out_w}:{out_h}",
-        "-r", str(out_fps), "-vsync", "cfr",
+        "-r", str(out_fps), "-fps_mode", "cfr",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2",

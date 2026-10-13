@@ -154,7 +154,7 @@ def test_export_examples_endpoint(client):
     body = r.json()
     assert len(body["written"]) >= 1          # the approved clip
     ex = Path(body["examples_dir"]) / body["written"][0]
-    text = ex.read_text()
+    text = ex.read_text(encoding="utf-8")
     assert "clip transcript:" in text and "human-approved" in text
 
 

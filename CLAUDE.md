@@ -16,4 +16,4 @@
 
 ## Pins and quirks
 - OpenCV must stay below 5: 5.x removed `CascadeClassifier`, which the haar face-detector fallback uses.
-- `tests/test_render.py::test_tracked_crop_actually_moves` has failed once under load and passed on rerun; treat a single failure there as possibly flaky, but investigate if it repeats.
+- `tests/test_render.py::test_tracked_crop_actually_moves` used to fail about 1 run in 3: its fixture used ffmpeg's randomly seeded `gradients` source. The fixture is now two flat colors, so a failure there is real.

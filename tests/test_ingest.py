@@ -138,7 +138,7 @@ def test_corrupt_file_rejected_cleanly(tmp_path):
 
 def test_unsupported_extension(tmp_path):
     bad = tmp_path / "file.txt"
-    bad.write_text("hi")
+    bad.write_text("hi", encoding="utf-8")
     with pytest.raises(IngestError, match="Unsupported extension"):
         ingest(bad, tmp_path)
 

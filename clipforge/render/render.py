@@ -34,7 +34,8 @@ class RenderError(Exception):
 
 
 def _run(cmd: list[str], timeout: int = 1800) -> None:
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", timeout=timeout)
     if p.returncode != 0:
         raise RenderError(f"ffmpeg failed: {p.stderr.strip()[-800:]}")
 
@@ -73,7 +74,13 @@ def write_sendcmd(path: Path, crop: CropPath, geom: CropGeometry,
         t = i / fps
         x = crop_x_px(crop.cx_at(t), src_w, geom.crop_w)
         lines.append(f"{t:.4f} crop@dyn x {x};")
-    path.write_text("\n".join(lines) + "\n")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _filter_path(path: Path) -> str:
+    """Path as a filter option value: forward slashes, and ':' escaped —
+    otherwise ffmpeg reads the drive colon in C:/... as an option separator."""
+    return path.as_posix().replace(":", "\\:")
 
 
 def build_filtergraph(geom: CropGeometry, crop: CropPath, src_w: int,
@@ -86,14 +93,14 @@ def build_filtergraph(geom: CropGeometry, crop: CropPath, src_w: int,
             parts.append(f"crop=w={geom.crop_w}:h={geom.crop_h}:x={x0}:y=0")
         else:
             x0 = crop_x_px(crop.keyframes[0].cx, src_w, geom.crop_w)
-            parts.append(f"sendcmd=f='{sendcmd_path.as_posix()}'")
+            parts.append(f"sendcmd=f='{_filter_path(sendcmd_path)}'")
             parts.append(f"crop@dyn=w={geom.crop_w}:h={geom.crop_h}:x={x0}:y=0")
         parts.append(f"scale={OUT_W}:{OUT_H}")
     else:  # letterbox narrow sources
         parts.append(f"scale={OUT_W}:-2")
         parts.append(f"pad={OUT_W}:{OUT_H}:(ow-iw)/2:(oh-ih)/2:color=black")
     if ass_path is not None:
-        parts.append(f"ass='{ass_path.as_posix()}'")
+        parts.append(f"ass='{_filter_path(ass_path)}'")
     return ",".join(parts)
 
 
@@ -145,7 +152,8 @@ def measure_loudness(path: Path) -> float:
         "ffmpeg", "-i", str(path), "-af",
         "loudnorm=I=-14:TP=-1.5:LRA=11:print_format=json",
         "-f", "null", "-",
-    ], capture_output=True, text=True, timeout=600)
+    ], capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=600)
     tail = p.stderr[p.stderr.rfind("{"):p.stderr.rfind("}") + 1]
     return float(json.loads(tail)["input_i"])
 

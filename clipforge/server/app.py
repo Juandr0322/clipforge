@@ -71,7 +71,7 @@ def create_app(workspace: Path, config: PipelineConfig | None = None,
 
     @app.get("/", response_class=HTMLResponse)
     def index():
-        return (STATIC / "index.html").read_text()
+        return (STATIC / "index.html").read_text(encoding="utf-8")
 
     @app.post("/api/jobs")
     async def create_job(file: UploadFile):
