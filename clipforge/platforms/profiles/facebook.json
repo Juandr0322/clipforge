@@ -1,0 +1,10 @@
+{
+  "name": "facebook",
+  "tier": "side",
+  "max_length_s": 90,
+  "target_length_s": {"min": 15, "max": 60},
+  "output_size": {"width": 1080, "height": 1920},
+  "safe_zone": {"x": 60, "y": 200, "width": 960, "height": 1300},
+  "checked": "unverified",
+  "source": "Meta help for Facebook Reels (90 s at last known check; Meta has been raising limits). Safe zone follows the Reels layout. Written from memory without a live lookup: re-verify before relying on it."
+}

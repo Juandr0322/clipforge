@@ -1,0 +1,10 @@
+{
+  "name": "x",
+  "tier": "side",
+  "max_length_s": 140,
+  "target_length_s": {"min": 15, "max": 45},
+  "output_size": {"width": 1080, "height": 1920},
+  "safe_zone": {"x": 40, "y": 120, "width": 1000, "height": 1500},
+  "checked": "unverified",
+  "source": "X help: 140 s for standard (non-Premium) accounts. Safe zone is conservative because the timeline crops previews. Written from memory without a live lookup: re-verify before relying on it."
+}

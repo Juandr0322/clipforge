@@ -1,0 +1,10 @@
+{
+  "name": "tiktok",
+  "tier": "main",
+  "max_length_s": 600,
+  "target_length_s": {"min": 20, "max": 60},
+  "output_size": {"width": 1080, "height": 1920},
+  "safe_zone": {"x": 60, "y": 150, "width": 900, "height": 1170},
+  "checked": "unverified",
+  "source": "Max length and UI margins from TikTok help pages and common safe-zone guides, written from memory without a live lookup: re-verify before relying on it. The zone leaves room for the top bar, the right button column and the bottom caption/music area."
+}
