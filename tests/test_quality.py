@@ -104,6 +104,26 @@ def test_rerun_does_not_rewrite_reports(job):
     assert {p: p.stat().st_mtime_ns for p in reports} == before
 
 
+def test_report_written_with_lf_only(tmp_path):
+    (tmp_path / "renders").mkdir()
+    update_section(tmp_path, 1, "hook_score", {"score": 1})
+    assert b"\r\n" not in report_path(tmp_path, 1).read_bytes()
+
+
+def test_quality_failure_does_not_fail_pipeline(job, monkeypatch, capsys):
+    import clipforge.quality.report as qr
+
+    def boom(job_dir):
+        raise OSError("/secret/path exploded")
+
+    monkeypatch.setattr(qr, "quality_job", boom)
+    m = run_pipeline(job, CFG, progress=lambda s: None)
+    assert m.stage.value == "rendered"
+    err = capsys.readouterr().err
+    assert "quality reports could not be written" in err
+    assert "/secret" not in err
+
+
 def test_job_without_reports_still_loads(job, tmp_path):
     ws = tmp_path / "ws"
     shutil.copytree(job.parent, ws)

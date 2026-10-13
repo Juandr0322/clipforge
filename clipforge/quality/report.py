@@ -49,8 +49,9 @@ def _write(job_dir: Path, report: ClipReport) -> None:
     p = report_path(job_dir, report.clip_id)
     tmp = p.with_name(f"{p.name}.{uuid.uuid4().hex[:8]}.tmp")
     try:
+        # newline="\n": text mode would write CRLF on Windows
         tmp.write_text(report.model_dump_json(indent=2, exclude_none=True),
-                       encoding="utf-8")
+                       encoding="utf-8", newline="\n")
         _replace_with_retry(tmp, p)
     except BaseException:
         tmp.unlink(missing_ok=True)
