@@ -240,6 +240,31 @@
       "notes": "Source: open PR #2 (branch step-0-windows-fixes-highlight-debug, commits a07aa97 and da57cf4) conflicts with main. The PR is a SOURCE TO READ ONLY: never merge it, never cherry-pick it, never push, never comment on/close/touch PR #2 on GitHub. Re-apply the changes by hand on a fresh local branch from main. Read the PR diff with: git diff main...origin/step-0-windows-fixes-highlight-debug. DO NOT copy the PR's Whisper change: it switched FasterWhisperTranscriber's default device from 'auto' to 'cpu' in clipforge/transcribe/backends.py, which throws away the GPU; keep 'auto' and add a targeted fallback instead (faster-whisper loads CUDA libs lazily, so the error may only appear when the segments generator is first iterated; make sure the retry re-runs transcription from the start on cpu and does not emit duplicate segments). PR implementation shape worth keeping: RAW_REPLY_NAME / RAW_REPLY_GLOB constants in clipforge/highlight/backends.py, a 'debug_dir: Path | None = None' attribute on the Highlighter base class, set by highlight_job in clipforge/highlight/run.py, which deletes stale highlight_raw_chunk_*.txt only before a run that actually executes (forced or not yet done), never on a no-op rerun. Debug warnings are CLI/server-side stderr logging only (LESSONS.md: no paths or job ids in HTTP error details). ANTHROPIC_WORKSPACE_ID is not CLIPFORGE_-prefixed, so the F01 .env.example check does not require it; document it anyway and never print its value. Tests must never call the real Claude API or download models. SKIP (already on main via F21/F22/F02; do not re-add): encoding='utf-8' on read_text/write_text and load_examples, CLI stdout/stderr UTF-8 reconfigure, ffmpeg filter-path escaping, -fps_mode replacing -vsync, test_render fixture changes, and the CLAUDE.md note about the flaky render test. Do not edit any existing test just to make it pass. tests/test_transcribe.py exists and is the home for the transcribe tests (create tests/test_transcribe_fallback.py only if it truly doesn't fit); touch tests/test_settings.py only if needed for the .env.example check."
     },
     {
+      "id": "F24",
+      "title": "Highlight crashes on anthropic SDK 1.x: drop temperature, use native workspace_id, pin the SDK, test against the real signature",
+      "priority": 0,
+      "area": [
+        "clipforge/highlight/backends.py",
+        "requirements.txt",
+        "tests/test_highlight.py",
+        "docs/LESSONS.md",
+        ".env.example"
+      ],
+      "depends_on": [
+        "F23"
+      ],
+      "acceptance": [
+        "The messages.create call in AnthropicHighlighter no longer passes temperature. The F23 test asserting temperature == 0 is REPLACED, not silently deleted: it is wrong now because SDK 1.x removed the parameter, and the builder says so in the commit message and in these notes. A test in tests/test_highlight.py asserts 'temperature' is not in the kwargs recorded by a fake client",
+        "With ANTHROPIC_WORKSPACE_ID set, AnthropicHighlighter passes workspace_id=<value> to messages.create; with it unset, the workspace_id kwarg is absent entirely. The F23 raw-header approach (default_headers {'anthropic-workspace-id': ...} in the Anthropic() constructor) is removed and the client is built with no workspace header. Tests in tests/test_highlight.py cover the set and unset cases with a recording fake client and check the value is never printed",
+        "requirements.txt pins anthropic>=1.13,<2 (replacing anthropic>=0.40) with a short comment saying 1.x removed temperature and added workspace_id; a test in tests/test_highlight.py reads requirements.txt and checks the pin",
+        "A test in tests/test_highlight.py records the kwargs AnthropicHighlighter really passes to messages.create (with a fake client, in BOTH the workspace-set and unset cases) and asserts every name exists in inspect.signature(anthropic.resources.messages.Messages.create).parameters of the REAL installed anthropic package (imported, never mocked, no network, no API key). If anthropic is not installed the test fails loudly, it does not skip. The builder confirms it fails against the F23 code (temperature re-added temporarily, or against git show main:clipforge/highlight/backends.py) and reports that",
+        "docs/LESSONS.md gains one line (under '## Tests' or a new '## SDKs' heading; the file stays under 40 lines): fake clients must be checked against the real SDK signature with an inspect.signature test, because a fake that accepted any kwarg hid a parameter the SDK had removed",
+        "The full suite (python -m pytest tests/ -q) and python -m pyflakes clipforge tests are green"
+      ],
+      "passes": false,
+      "notes": "Bug reported on Windows with anthropic 1.13.0: TypeError: Messages.create() got an unexpected keyword argument 'temperature'. F23 added temperature=0 to the messages.create call in clipforge/highlight/backends.py and SDK 1.x removed that parameter; the F23 fake client accepted any kwarg and hid it. The lead checked the repo venv: anthropic 1.13.0 is installed, and inspect.signature(anthropic.resources.messages.Messages.create) has NO temperature but DOES have workspace_id (also max_tokens, messages, model, system, extra_headers, ...). The builder should check these facts again with .venv/bin/python -I before coding. Must be built and merged BEFORE F10, which also touches clipforge/highlight/backends.py. Do not touch PR #2 or any of F10's files except clipforge/highlight/backends.py. The F23 debug/raw-reply code (RAW_REPLY_NAME/RAW_REPLY_GLOB, debug_dir, stale-file cleanup) stays as is. Edit .env.example only if the ANTHROPIC_WORKSPACE_ID comment needs rewording (it now maps to the native workspace_id argument, not a header); never print its value. Tests must never call the real Claude API."
+    },
+    {
       "id": "F08",
       "title": "Platform profiles: one settings file per platform, read by later steps",
       "priority": 7,
