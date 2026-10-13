@@ -258,41 +258,63 @@ def _chunk():
     return chunk_transcript(make_transcript(duration=100.0))[0]
 
 
-@pytest.mark.parametrize("ws", ["ws-123", None])
-def test_workspace_header(monkeypatch, ws):
-    seen = {}
-
-    class FakeAnthropic:
-        def __init__(self, **kw):
-            seen.update(kw)
-    mod = types.ModuleType("anthropic")
-    mod.Anthropic = FakeAnthropic
-    monkeypatch.setitem(sys.modules, "anthropic", mod)
+def _calls_for(monkeypatch, ws):
     if ws:
         monkeypatch.setenv("ANTHROPIC_WORKSPACE_ID", ws)
     else:
         monkeypatch.delenv("ANTHROPIC_WORKSPACE_ID", raising=False)
+    c = FakeClient([GOOD])
+    AnthropicHighlighter(client=c).analyze_chunk(_chunk(), 100.0)
+    return c.calls
+
+
+@pytest.mark.parametrize("ws", ["ws-123", None])
+def test_workspace_id_kwarg(monkeypatch, ws):
+    (kw,) = _calls_for(monkeypatch, ws)
+    if ws:
+        assert kw["workspace_id"] == ws
+    else:
+        assert "workspace_id" not in kw
+
+
+def test_client_built_without_workspace_header(monkeypatch):
+    seen = {}
+    mod = types.ModuleType("anthropic")
+    mod.Anthropic = lambda **kw: seen.update(kw) or object()
+    monkeypatch.setitem(sys.modules, "anthropic", mod)
+    monkeypatch.setenv("ANTHROPIC_WORKSPACE_ID", "ws-123")
     AnthropicHighlighter()
-    expected = {"anthropic-workspace-id": ws} if ws else {}
-    assert seen["default_headers"] == expected
+    assert seen == {}
 
 
 def test_workspace_id_never_printed(monkeypatch, capsys):
-    mod = types.ModuleType("anthropic")
-    mod.Anthropic = lambda **kw: object()
-    monkeypatch.setitem(sys.modules, "anthropic", mod)
-    monkeypatch.setenv("ANTHROPIC_WORKSPACE_ID", "secret-ws-id")
-    AnthropicHighlighter()
+    _calls_for(monkeypatch, "secret-ws-id")
     out = capsys.readouterr()
     assert "secret-ws-id" not in out.out + out.err
 
 
-def test_temperature_zero_on_every_call():
-    c = FakeClient([GOOD])
-    h = AnthropicHighlighter(client=c)
-    h.analyze_chunk(_chunk(), 100.0)
-    h.analyze_chunk(_chunk(), 100.0)
-    assert len(c.calls) == 2 and all(k["temperature"] == 0 for k in c.calls)
+def test_no_temperature_kwarg(monkeypatch):
+    # Replaces F23's temperature == 0 test: SDK 1.x removed the parameter.
+    calls = _calls_for(monkeypatch, None) + _calls_for(monkeypatch, "ws-1")
+    assert len(calls) == 2 and all("temperature" not in k for k in calls)
+
+
+@pytest.mark.parametrize("ws", ["ws-123", None])
+def test_kwargs_exist_in_real_sdk_signature(monkeypatch, ws):
+    import inspect
+    import anthropic  # real package: no skip, fails loudly if missing
+    from anthropic.resources.messages import Messages
+    params = inspect.signature(Messages.create).parameters
+    (kw,) = _calls_for(monkeypatch, ws)
+    missing = set(kw) - set(params)
+    assert not missing, f"anthropic {anthropic.__version__} rejects: {missing}"
+
+
+def test_requirements_pin_anthropic_1x():
+    req = (Path(__file__).resolve().parent.parent / "requirements.txt"
+           ).read_text(encoding="utf-8")
+    lines = [ln.split("#")[0].strip() for ln in req.splitlines()]
+    assert "anthropic>=1.13,<2" in lines
 
 
 def test_empty_reply_saved_with_debug_dir(tmp_path, capsys):

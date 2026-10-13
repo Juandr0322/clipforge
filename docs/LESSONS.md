@@ -14,6 +14,7 @@
 - Tests never touch the real ~/clipforge-workspace or .env: pass --workspace tmp_path and patch env loading.
 - Compare names as sets/regex, not substrings (CLIPFORGE_A "matches" CLIPFORGE_ASR).
 - ffmpeg lavfi silently randomizes out-of-range args (gradients x1 >= width). Fixtures use deterministic sources (geq, testsrc).
+- Fake clients must be checked against the real SDK signature with an inspect.signature test: a fake that accepted any kwarg hid a parameter (temperature) the SDK had removed.
 
 ## Review page (index.html)
 - Build DOM with h()/textContent only; static tests forbid innerHTML, inline on*, alert/confirm/prompt, setInterval.
