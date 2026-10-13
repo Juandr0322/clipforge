@@ -1,0 +1,13 @@
+# LF in the repo and in every checkout, on every OS. Windows checkouts used to
+# get CRLF (core.autocrlf), which made files differ from what the code reads
+# and writes (e.g. few-shot example files, the served index.html).
+* text=auto eol=lf
+
+# Never touch binaries.
+*.mp4 binary
+*.png binary
+*.webm binary
+*.mov binary
+*.mkv binary
+*.wav binary
+*.m4a binary

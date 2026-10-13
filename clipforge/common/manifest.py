@@ -7,7 +7,7 @@ share in-memory state — this file IS the interface between them.
 """
 from __future__ import annotations
 
-import json
+import re
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -99,12 +99,12 @@ class Manifest(BaseModel):
     def save(self, job_dir: Path) -> None:
         job_dir.mkdir(parents=True, exist_ok=True)
         tmp = self.path_for(job_dir).with_suffix(".json.tmp")
-        tmp.write_text(self.model_dump_json(indent=2))
+        tmp.write_text(self.model_dump_json(indent=2), encoding="utf-8")
         tmp.replace(self.path_for(job_dir))  # atomic write — never a half-written manifest
 
     @classmethod
     def load(cls, job_dir: Path) -> "Manifest":
-        return cls.model_validate_json(cls.path_for(job_dir).read_text())
+        return cls.model_validate_json(cls.path_for(job_dir).read_text(encoding="utf-8"))
 
     # ---------- helpers ----------
     @property
@@ -141,3 +141,13 @@ def new_job_id() -> str:
     """Short, sortable, filesystem-safe job id."""
     return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-") + \
         __import__("uuid").uuid4().hex[:6]
+
+
+# Job ids become directory names, so only plain names are allowed: no dot at
+# the start (blocks '.', '..', '.uploads', '.hidden'), no slashes, no spaces.
+# Ids made by new_job_id() (e.g. 20261012-101500-ab12cd) match.
+_JOB_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+
+
+def is_safe_job_id(job_id: str) -> bool:
+    return bool(job_id) and _JOB_ID_RE.fullmatch(job_id) is not None

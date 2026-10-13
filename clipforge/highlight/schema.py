@@ -7,7 +7,7 @@ All timestamps are float seconds, same rule as everywhere.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -65,12 +65,12 @@ class CandidateSet(BaseModel):
 
     def save(self, path: Path) -> None:
         tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(self.model_dump_json(indent=2))
+        tmp.write_text(self.model_dump_json(indent=2), encoding="utf-8")
         tmp.replace(path)
 
     @classmethod
     def load(cls, path: Path) -> "CandidateSet":
-        return cls.model_validate_json(path.read_text())
+        return cls.model_validate_json(path.read_text(encoding="utf-8"))
 
 
 def dedup(cands: list[ClipCandidate],

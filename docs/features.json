@@ -1,0 +1,514 @@
+{
+  "project": "ClipForge",
+  "features": [
+    {
+      "id": "F01",
+      "title": "Load ANTHROPIC_API_KEY and CLIPFORGE_* settings from a project-root .env (real env vars win)",
+      "priority": 1,
+      "area": [
+        "clipforge/settings.py",
+        "clipforge/cli.py",
+        "requirements.txt",
+        ".env.example",
+        "tests/test_settings.py"
+      ],
+      "depends_on": [],
+      "acceptance": [
+        "A test with a temp .env containing CLIPFORGE_HL=mock and ANTHROPIC_API_KEY=test-key shows both in os.environ after the CLI's settings loader runs, when neither was set before",
+        "A test with CLIPFORGE_HL=anthropic already set in the real environment and CLIPFORGE_HL=mock in .env shows the value is still 'anthropic' after loading",
+        "A missing .env is not an error: the loader returns normally and the env is unchanged (test)",
+        "The default .env location is the repo root (the parent of the clipforge package), whatever the current directory is (test runs the loader from a different cwd)",
+        "Importing clipforge.pipeline and clipforge.server.app without calling the CLI does not read any .env, so the test suite never picks up Diego's real key (test)",
+        "python-dotenv is in requirements.txt; .env.example lists every CLIPFORGE_* name that appears in the clipforge/ source (a test greps the source and checks each name is in .env.example); no command prints the API key's value"
+      ],
+      "passes": true,
+      "notes": "Load .env only from the CLI entry point (every subcommand, including serve and pipeline). PipelineConfig reads os.environ when it is created, so loading at the start of main() is enough. README.md is read-only on disk; don't edit it in this feature."
+    },
+    {
+      "id": "F02",
+      "title": "Make tests/test_render.py::test_tracked_crop_actually_moves deterministic without weakening it",
+      "priority": 1,
+      "area": [
+        "tests/test_render.py",
+        "clipforge/render/render.py"
+      ],
+      "depends_on": [],
+      "acceptance": [
+        "Before any fix, the root cause is found and recorded in this feature's notes and in the test's docstring: which assertion failed, and why it depends on timing or load",
+        "The test passes 25 times in a row: for i in $(seq 25); do python -m pytest tests/test_render.py::test_tracked_crop_actually_moves -q || break; done",
+        "The test passes 10 times in a row while the full suite runs at the same time in another process (CPU load)",
+        "The test still asserts that early output frames are red-dominant and late frames blue-dominant",
+        "A negative-control test renders the same source with a constant crop path (cx=0.15 throughout) and shows the movement check reports 'did not move', proving the check still catches a frozen camera",
+        "The full suite still passes"
+      ],
+      "passes": true,
+      "notes": "ROOT CAUSE (found before fixing): failing assertion was `assert r0 > b0` (early frame red-dominant). Cause is the test SOURCE, not timing/load and not product code: the old source passed x1=1280 to ffmpeg's `gradients` filter on a 1280-wide video, but the filter requires x1 < width, so ffmpeg replaced the out-of-range x1 with an unseeded random one. That put the red->blue crossover at x1/2, anywhere in [0,640), different on every generation (x1=1279 gives a fixed crossover at x=640); when it fell left of the 405px crop window at t=0.5s the frame was already blue. Reproduced on an idle machine: 10 of 30 freshly generated sources were bad; same render code, different source. Ruled out with evidence: OpenCV CAP_PROP_POS_MSEC seek on H.264 (seek frames pixel-identical to sequential decode at 0.5s and 9.5s) and frames at crop transitions (path is smooth, sampled frames sit mid-ramp). render.py unchanged. Fix: hue_gradient_video now builds a geq-computed ramp (one PNG, looped), identical every run (clearer fixture than relying on x1=1279); added negative control test_frozen_camera_is_reported_as_not_moved. After this merges, the lead removes the 'Known quirks' line from CLAUDE.md."
+    },
+    {
+      "id": "F03",
+      "title": "Clean pyflakes lint, add a CI lint step, and write docs/ARCHITECTURE.md",
+      "priority": 2,
+      "area": [
+        "clipforge/pipeline.py",
+        "clipforge/review/store.py",
+        "clipforge/reframe/detect.py",
+        "clipforge/common/manifest.py",
+        "clipforge/render/captions.py",
+        "clipforge/highlight/schema.py",
+        "clipforge/highlight/run.py",
+        "tests/test_render.py",
+        "tests/test_server.py",
+        ".github/workflows/tests.yml",
+        "docs/ARCHITECTURE.md"
+      ],
+      "depends_on": [
+        "F01",
+        "F02"
+      ],
+      "acceptance": [
+        "python -m pyflakes clipforge tests prints nothing and exits 0",
+        "The pipeline still falls back from mediapipe to haar when mediapipe isn't installed: tests/test_server.py::test_pipeline_config_fallbacks and the full suite pass",
+        ".github/workflows/tests.yml runs python -m pyflakes clipforge tests as a step before the tests",
+        "docs/ARCHITECTURE.md covers each of the 7 stages: its module folder, the JSON/media files it reads and writes in the job dir, the manifest stage it sets, and its engine options including the mock",
+        "Every file name, function name and CLIPFORGE_* setting that docs/ARCHITECTURE.md mentions exists in the code (a reviewer greps each one)"
+      ],
+      "passes": true,
+      "notes": "pyflakes ignores '# noqa'. The 'import mediapipe' in PipelineConfig.resolve is a deliberate availability check, so rewrite it as a check pyflakes accepts. Don't delete it. Keep ARCHITECTURE.md to about one page; it describes what exists today."
+    },
+    {
+      "id": "F04",
+      "title": "Server hardening: safe job/clip ids, clean upload rejection, running-state flag",
+      "priority": 3,
+      "area": [
+        "clipforge/server/app.py",
+        "tests/test_server.py"
+      ],
+      "depends_on": [
+        "F03"
+      ],
+      "acceptance": [
+        "A unit test of the server's job-id check rejects '..', '.uploads', '.hidden', 'a/b', 'a\\b' and '', and accepts real ids made by new_job_id(). HTTP requests using rejected ids get 404 (or 400), never 500 and never a file outside the workspace",
+        "A test places a manifest.json in a directory next to the workspace and shows no API route can read it or its renders",
+        "Uploading a non-video (notes.txt as text/plain, or a .png) returns 400 with a message naming the accepted video types. An empty file and the filenames '', '..' and '../../x.mp4' return 400 or are stored safely, never 500. Afterwards the workspace has no new job dir and .uploads is empty (tests)",
+        "GET /api/jobs and GET /api/jobs/{id} include a boolean 'running' that is true only while that job's pipeline is executing; it is false after a sync-pipeline upload completes (test)",
+        "POST /api/jobs/{id}/rerun while that job is already running returns 409 and starts no second run (test using a pipeline stub that blocks)",
+        "Negative or non-integer clip ids on the video/qa/review routes return 404 or 422, never 500 (test)"
+      ],
+      "passes": true,
+      "notes": "Today Path(file.filename).name turns '..' into '..', and opening that for writing gives a 500. Keep all existing tests in tests/test_server.py passing unchanged."
+    },
+    {
+      "id": "F05",
+      "title": "Review page: escape all text, update the clip grid in place, stop idle polling, inline toasts",
+      "priority": 4,
+      "area": [
+        "clipforge/server/static/index.html",
+        "tests/test_ui_static.py"
+      ],
+      "depends_on": [
+        "F04"
+      ],
+      "acceptance": [
+        "With mock engines, a video uploaded as '<img src=x onerror=alert(1)>.mp4' and a saved note '<b>hi</b> \"quoted\"' both show as literal text after reload. No <img>/<b> element is created and the layout is intact (Playwright)",
+        "tests/test_ui_static.py checks that index.html has no inline on*= handler attributes and no alert( calls",
+        "While a second upload is processing in the background, a clip video that was already playing keeps playing (its currentTime keeps rising for 10 s), and text half-typed into a note or trim field is not cleared (Playwright)",
+        "When no job is running, the page makes no polling requests for 15 s (Playwright network log); polling resumes after a new upload starts and stops again once that job finishes",
+        "Saving a review shows an inline 'saved' confirmation within 1 s. A failing request (e.g. server stopped) shows an inline error toast, and no browser dialog ever opens (Playwright dialog listener). The export-examples result also shows as a toast"
+      ],
+      "passes": true,
+      "notes": "The frontend is a single file, so F05 -> F06 -> F07 -> F17 -> F18 -> F20 must run one after another. Keep the current visual style and CSS variables. Use the 'running' flag from F04 to decide when to poll."
+    },
+    {
+      "id": "F06",
+      "title": "Review speed: keyboard shortcuts, filter, sort by score, set trim from playhead",
+      "priority": 5,
+      "area": [
+        "clipforge/server/static/index.html",
+        "tests/test_ui_static.py"
+      ],
+      "depends_on": [
+        "F05"
+      ],
+      "acceptance": [
+        "With a clip selected: A approves, R rejects, Space plays/pauses, J/K (or Down/Up) select the next/previous clip, and ? shows a shortcut help panel. Shortcuts don't fire while the cursor is in an input (typing 'a' in a note doesn't approve) (Playwright)",
+        "The filter (all / unreviewed / approved / rejected) shows counts. Approving a clip under 'unreviewed' removes it from view and selects the next unreviewed clip (Playwright)",
+        "Sort by score (high to low) and by time reorders the cards. The chosen filter and sort survive a background refresh and a page reload",
+        "For a clip whose start is S, pausing its video at 3.0 s and clicking 'set start' (or pressing [) puts S+3.0 in the start field, in absolute source seconds. ']' does the same for end. Saving stores those values, and the job's avg-trim metric changes (Playwright + GET /api/jobs/{id})"
+      ],
+      "passes": true,
+      "notes": "Trim fields stay in absolute source seconds, the unit the API and review store's metrics use. Keep the shortcut list in the help panel and in the page source in sync."
+    },
+    {
+      "id": "F07",
+      "title": "Upload UX: drag-and-drop, upload progress bar, file-type feedback",
+      "priority": 6,
+      "area": [
+        "clipforge/server/static/index.html",
+        "tests/test_ui_static.py",
+        "clipforge/server/app.py",
+        "clipforge/review/store.py"
+      ],
+      "depends_on": [
+        "F06"
+      ],
+      "acceptance": [
+        "Dragging a video file over the sidebar highlights the drop zone, and dropping it uploads it: a new job appears in the list (Playwright)",
+        "During an upload a progress indicator shows a percentage that rises to 100%, then switches to pipeline progress for the new job (Playwright)",
+        "Dropping or picking a .txt or .png shows an inline 'not a video file' message and sends no request (network log)",
+        "A server-side rejection (e.g. 'junk.mp4' containing text) shows the server's 400 message inline, and the upload zone returns to its normal state",
+        "Dropping two video files uploads both, one after the other, and two jobs appear",
+        "While a 90 s video is uploading/ingesting, GET /api/jobs still answers in under 1 s (the upload route must not block the event loop) (test)",
+        "At a 390px-wide viewport the page is usable: job list and clip detail stack or toggle instead of side by side, clip cards fit the width, and approve/reject are visible without horizontal scrolling (Playwright)",
+        "8 simultaneous POST /api/jobs/{id}/clips/{n}/review requests for different clips all return 200 and all 8 reviews are persisted; none returns 500 (test with threads)",
+        "Review trim values outside [0, source duration] or with start >= end return 400 and store nothing (test)"
+      ],
+      "passes": true,
+      "notes": " Added after F05 testing: POST /api/jobs is async def but runs blocking ingest on the event loop, stalling all requests ~12 s; and there is no mobile layout (390px makes #detail 100px wide). Added after F06 testing: load_reviews/upsert/save_reviews are unlocked and share one reviews.json.tmp, so concurrent saves lose updates or 500 (FileNotFoundError on rename). Use a per-job lock in the server and a unique temp file per write."
+    },
+    {
+      "id": "F21",
+      "title": "Windows compatibility: UTF-8 file I/O everywhere, guard test, and a Windows CI job",
+      "priority": 0,
+      "area": [
+        "clipforge/**/*.py",
+        "tests/test_encoding.py",
+        ".github/workflows/tests.yml"
+      ],
+      "depends_on": [
+        "F07"
+      ],
+      "acceptance": [
+        "With Python's default text encoding forced to cp1252 (simulate Windows, e.g. run a subprocess with PYTHONUTF8=0 and monkeypatched locale or by wrapping io.text_encoding), GET / returns 200 and the page contains the UTF-8 characters intact (test)",
+        "Every text-mode read_text/write_text/open in clipforge/ passes encoding='utf-8' (or is binary); tests/test_encoding.py scans the source with ast and fails on any text-mode call without an explicit encoding",
+        "A transcript, hook, note and example file containing non-ASCII text (emoji, accented letters, curly quotes) round-trips through save/load and through export_examples unchanged (test)",
+        "The rendered .ass subtitle file is written as UTF-8 so libass shows accented captions correctly (test reads the bytes)",
+        ".github/workflows/tests.yml gains a windows-latest job that installs ffmpeg and runs at least tests/test_server.py, tests/test_ui_static.py and tests/test_encoding.py (and the full suite if it passes there); the Linux job is unchanged"
+      ],
+      "passes": true,
+      "notes": "Reported by Diego: localhost doesn't run on his Windows PC. Root cause found by the lead: app.py index() does (STATIC/'index.html').read_text() with no encoding; on Windows Python defaults to cp1252, and index.html contains byte 0x9D (from a right curly quote) which cp1252 can't decode -> 500 on GET /. ~20 other read_text/write_text calls have the same issue (JSON stores, .ass captions, few-shot examples). Workaround until merged: PYTHONUTF8=1. Status: code merged; Linux CI green. Windows CI fails only because windows-latest gets ffmpeg 8, which removed -vsync (ingest.py) → tracked as F22. F21 passes once the Windows job is green."
+    },
+    {
+      "id": "F22",
+      "title": "Support current ffmpeg (8.x) as well as Ubuntu's 6.1: replace removed options, test against both in CI",
+      "priority": 0,
+      "area": [
+        "clipforge/ingest/ingest.py",
+        "clipforge/render/**",
+        "clipforge/refine/silence.py",
+        "tests/**",
+        ".github/workflows/tests.yml"
+      ],
+      "depends_on": [
+        "F21"
+      ],
+      "acceptance": [
+        "With a current ffmpeg build first on PATH (lead provides one at the path in notes), the full test suite passes; list every option or output-format change found and how it was fixed",
+        "ingest no longer uses -vsync; it uses -fps_mode cfr (supported since ffmpeg 5.1). The suite still passes with the system ffmpeg 6.1",
+        "Any other ffmpeg/ffprobe output the code parses (loudnorm JSON, silencedetect lines, ffprobe JSON fields, stderr error text) is checked against both versions; parsing works on both (tests)",
+        "The Linux CI job also runs the suite against a current static ffmpeg (e.g. BtbN latest linux64 gpl from GitHub releases) in addition to the distro ffmpeg; the windows-latest job turns green",
+        "The startup preflight prints the detected ffmpeg version, and refuses versions older than 5.1 with a clear message"
+      ],
+      "passes": true,
+      "notes": "Found by the new windows-latest CI job (F21): choco installs ffmpeg 8 (libavutil 61) which rejects '-vsync' (clipforge/ingest/ingest.py:178), so ingest fails on every video. Diego's 'winget install Gyan.FFmpeg' also installs the latest ffmpeg, so this hits him too. Lead downloaded a current build for local testing: /tmp/claude-0/-home-claude-clipforge/2f6ac4fe-19f9-56d1-9b85-1edd19c12068/scratchpad/ff8/ffmpeg-master-latest-linux64-gpl/bin (ffmpeg N-127388, 2026-10-12)."
+    },
+    {
+      "id": "F08",
+      "title": "Platform profiles: one settings file per platform, read by later steps",
+      "priority": 7,
+      "area": [
+        "clipforge/platforms/**",
+        "tests/test_platforms.py"
+      ],
+      "depends_on": [],
+      "acceptance": [
+        "There is one editable data file per platform: tiktok, reels, shorts, x and facebook. Each has max length, target length range, output size 1080x1920, a caption safe-zone rectangle and a tier (main for tiktok/reels/shorts, side for x/facebook). A test loads all 5",
+        "A profile file that is invalid (target max above max length, a safe zone outside the frame, or a missing field) fails to load with an error naming the file and field (test)",
+        "Asking for an unknown platform raises a clear error listing the valid names (test)",
+        "A helper returns the safe zone shared by all main-tier platforms. It is a non-empty rectangle inside 1080x1920, and changing one profile file's safe zone changes the result (test with temp profile files)"
+      ],
+      "passes": false,
+      "notes": "Store profile values as data, not code, so Diego can edit them by hand. Check current platform limits when writing them and add a 'checked' date and a source note in each file. Tests check structure and behaviour, not specific platform numbers."
+    },
+    {
+      "id": "F09",
+      "title": "Per-clip quality report file and a post-render quality pass (foundation for Group C)",
+      "priority": 7,
+      "area": [
+        "clipforge/quality/**",
+        "clipforge/pipeline.py",
+        "tests/test_quality.py"
+      ],
+      "depends_on": [
+        "F03"
+      ],
+      "acceptance": [
+        "After a mock pipeline run (ASR/HL mock, haar), every rendered clip has renders/clip_NNN.report.json that validates against the report schema (sections: hook_score, value_adds, pacing_flags, variants, loop, exports, all optional) (test)",
+        "A shared helper updates one section of a report without changing the others. Two writers updating different sections both keep their data, and writes are atomic (test)",
+        "Running the pipeline again on a finished job doesn't rewrite the reports, so their mtimes are unchanged (test)",
+        "Jobs rendered before this feature, with no report files, still load in GET /api/jobs/{id}, and the existing test_server tests pass",
+        "No existing Stage name or STAGE_ORDER entry is renamed or removed (test_server and test_ingest pass unchanged)"
+      ],
+      "passes": false,
+      "notes": "The quality pass runs after render inside run_pipeline and is idempotent. Later features (F11, F12, F13, F14, F15) each fill in their own section through the shared helper."
+    },
+    {
+      "id": "F10",
+      "title": "Smarter highlight picking: trigger/peak/payoff times, context setup, hook type, stranger check",
+      "priority": 8,
+      "area": [
+        "clipforge/highlight/**",
+        "tests/test_highlight.py",
+        "tests/fixtures/candidates_v1.json"
+      ],
+      "depends_on": [
+        "F03"
+      ],
+      "acceptance": [
+        "The highlight system prompt asks for trigger_t, reaction_peak_t, payoff_end_t, context_setup (one line), hook_type (fixed vocabulary) and a stranger check, and says moments that need backstory must be rejected. A test checks each field name appears in the built prompt",
+        "parse_llm_response keeps valid new fields. Times that are out of order or outside [start, end] are cleared (the candidate is kept). An unknown hook_type becomes 'other'. A multi-line context_setup is cut to one line (tests with crafted LLM text)",
+        "A candidate whose stranger check fails is left out of candidates and listed in CandidateSet.rejected with its reason (test)",
+        "A v1 candidates.json fixture without the new fields still loads, and the refine/render tests pass unchanged (test)",
+        "MockHighlighter fills every new field deterministically, so a mock pipeline run gives candidates.json entries with trigger_t <= reaction_peak_t <= payoff_end_t inside each clip (test)"
+      ],
+      "passes": false,
+      "notes": "Bump CandidateSet.schema_version to 2; all new fields are optional. Tests must never call the real Claude API."
+    },
+    {
+      "id": "F11",
+      "title": "Hook-first trimming and a first-3-seconds hook score",
+      "priority": 9,
+      "area": [
+        "clipforge/refine/**",
+        "clipforge/quality/hook.py",
+        "clipforge/quality/run.py",
+        "tests/test_refine.py",
+        "tests/test_hook_score.py"
+      ],
+      "depends_on": [
+        "F09",
+        "F10"
+      ],
+      "acceptance": [
+        "For a candidate with trigger_t well after its start (a preamble), the refined clip's first spoken sentence is the one containing trigger_t, and the clip's end is not before payoff_end_t. The no-word-straddles-a-cut invariant and the length limits still hold (test with a crafted transcript)",
+        "When cutting the preamble would make the clip too short or break limits, the original start is kept and the reason is recorded. Candidates without trigger_t refine exactly as before, and the existing refine tests pass unchanged",
+        "Every rendered clip's report has hook_score: a 0-100 total plus four sub-scores (speech in second 1, motion in second 1, face visible, on-screen text in the first 3 s), each with a one-line reason (mock pipeline test)",
+        "Sub-scores respond to their signals: first word at 0.2 s scores higher speech than first word at 2.5 s; a moving testsrc scores higher motion than a static color clip; a scripted MockDetector face gives a full face score and no face gives 0; captions disabled with no overlay gives text score 0 (tests with synthetic inputs)"
+      ],
+      "passes": false,
+      "notes": "Compute the on-screen-text sub-score from what the pipeline itself puts on screen (captions, plus the F12 overlay when present). No OCR needed. Synthetic test videos must be 12 s or shorter."
+    },
+    {
+      "id": "F12",
+      "title": "Originality layer: context overlay, punch-in zoom on the reaction peak, optional end card, value-add checklist",
+      "priority": 9,
+      "area": [
+        "clipforge/render/render.py",
+        "clipforge/render/run.py",
+        "clipforge/render/overlays.py",
+        "tests/test_originality.py"
+      ],
+      "depends_on": [
+        "F09",
+        "F10"
+      ],
+      "acceptance": [
+        "When a clip has context_setup, the rendered master shows that text starting at 0 s and gone by 4 s. The overlay events and the report both record its timing (test)",
+        "Pixel proof of the punch-in: with a synthetic source of a small white square on black and reaction_peak_t set, the white fraction of the frame at the peak is clearly larger than at 0 s. With a tracked crop path at cx=0.3 over a square at x=0.3, the square stays in the middle third of the output during the zoom (test)",
+        "With the end card enabled by a CLIPFORGE_* setting, the master's duration is clip length + end-card length (±0.1 s) and verify_render passes. When it is disabled (the default), the duration is unchanged (test)",
+        "Each clip's report value_adds lists context_overlay, punch_in, end_card and captions, each with applied true/false and a reason (e.g. 'no reaction_peak_t from highlight') (mock pipeline test)",
+        "Clips from v1 candidates (no new fields) render as before, and tests/test_render.py passes unchanged"
+      ],
+      "passes": false,
+      "notes": "The punch-in must follow the existing face-tracking crop path, not the frame center. Make each value-add switchable by a CLIPFORGE_* setting and add new names to .env.example."
+    },
+    {
+      "id": "F13",
+      "title": "Word-chunked captions inside platform safe zones + pacing check (>3 s with no visual change)",
+      "priority": 10,
+      "area": [
+        "clipforge/render/captions.py",
+        "clipforge/render/run.py",
+        "clipforge/quality/pacing.py",
+        "clipforge/quality/run.py",
+        "tests/test_captions_pacing.py"
+      ],
+      "depends_on": [
+        "F08",
+        "F11",
+        "F12"
+      ],
+      "acceptance": [
+        "Caption cards hold at most 3 words and never span a pause longer than 0.6 s. The existing ±20 ms caption sync test in tests/test_render.py still passes",
+        "The caption text box for a 1080x1920 frame, computed from the caption style, lies entirely inside the shared main-platform safe zone from F08. Changing a profile's safe zone in a temp profile moves the captions (test)",
+        "Pacing check: a synthetic clip that is static for 5 s and then moving gets exactly one flag covering at least 3 s of the static part, and a continuously moving testsrc gets none. Caption text changes alone do not count as visual change (test)",
+        "pacing_flags in each clip's report lists [start, end] intervals in clip-relative seconds (mock pipeline test)"
+      ],
+      "passes": false,
+      "notes": "Visual change means a scene/pixel change, a camera cut or zoom, or an overlay appearing or disappearing."
+    },
+    {
+      "id": "F14",
+      "title": "Hook variants (2-3 openings per clip) and loop-point detection",
+      "priority": 11,
+      "area": [
+        "clipforge/variants/**",
+        "clipforge/pipeline.py",
+        "tests/test_variants.py"
+      ],
+      "depends_on": [
+        "F11",
+        "F12"
+      ],
+      "acceptance": [
+        "After a mock pipeline run, each clip that has trigger/peak data gets 2-3 variant files next to its master (e.g. a cold open on the reaction peak, or starting at the trigger). Each passes verify_render (1080x1920, audio), and no two variants of a clip open at the same time (test)",
+        "Each variant in the report's variants list has a label, file name and its own hook_score (test)",
+        "Setting the variant count to 0 with a CLIPFORGE_* setting creates no variant files and an empty variants list (test)",
+        "The report's loop has a 0-1 score and a suggested end inside the clip. A synthetic clip whose last frame and audio match its first scores higher than one where they differ (test)",
+        "Running the pipeline again doesn't re-render variants (file mtimes unchanged)"
+      ],
+      "passes": false,
+      "notes": "Reuse the render and hook-score functions; don't edit them here. Keep the number of renders per clip in mind, because full-suite runtime matters."
+    },
+    {
+      "id": "F15",
+      "title": "Per-platform exports from one master + a text file per clip (title, caption, hashtags, credit)",
+      "priority": 11,
+      "area": [
+        "clipforge/export/**",
+        "clipforge/cli.py",
+        "tests/test_export.py"
+      ],
+      "depends_on": [
+        "F08",
+        "F09"
+      ],
+      "acceptance": [
+        "Exporting a clip for tiktok, reels and shorts writes exports/<platform>/clip_NNN.mp4 for each. Each passes verify_render. Export still works after normalized.mp4 is deleted, which proves it uses the master or chosen variant and doesn't run the full render again (test)",
+        "When the source clip is longer than a platform's max length (from a temp profile), that platform is skipped and the reason is recorded in the report's exports section. The other platforms still export (test)",
+        "Each exported clip has exports/<platform>/clip_NNN.txt with a suggested title, caption, hashtags and a credit line naming the creator passed in (or a visible [creator] placeholder). The text comes from a swappable engine whose mock is deterministic, and tests never call Claude",
+        "python -m clipforge.cli export <job> --clip N --platforms tiktok,shorts produces those files and prints their paths. Running it again is a no-op unless --force is given (test via subprocess or main())"
+      ],
+      "passes": false,
+      "notes": "No posting or uploading anywhere; exports are local files only."
+    },
+    {
+      "id": "F16",
+      "title": "Control-panel API: quality data in job detail, per-platform reviews, export, creator name, trend references",
+      "priority": 12,
+      "area": [
+        "clipforge/server/app.py",
+        "clipforge/review/store.py",
+        "tests/test_server_panel.py"
+      ],
+      "depends_on": [
+        "F04",
+        "F13",
+        "F14",
+        "F15"
+      ],
+      "acceptance": [
+        "GET /api/jobs/{id} clips include hook_score, value_adds, pacing_flags, variants, loop and exports from each report (null when missing). Old jobs without reports still load (test)",
+        "A review can carry per-platform decisions (tiktok/reels/shorts/x/facebook). An old reviews.json without them loads as 'same decision for all platforms', and job/workspace metrics give the same numbers as before for old data (test)",
+        "POST export for a job exports only the platforms each clip is approved for (optionally a chosen variant), using the creator name stored for the job. Files appear under exports/ (test)",
+        "The trend-reference API stores URL, platform, niche, hook type and notes in the workspace's references.json, lists them back, and rejects a missing or non-http URL with 400 (test)",
+        "Every new route validates job and clip ids the same way as F04 (test with '..')"
+      ],
+      "passes": false,
+      "notes": "Keep all existing tests in tests/test_server.py passing unchanged."
+    },
+    {
+      "id": "F17",
+      "title": "Control-panel UI: hook score, checklist, pacing flags, variants side by side, per-platform approve, export, trend form",
+      "priority": 13,
+      "area": [
+        "clipforge/server/static/index.html",
+        "tests/test_ui_static.py"
+      ],
+      "depends_on": [
+        "F07",
+        "F16"
+      ],
+      "acceptance": [
+        "With mock engines, each clip card shows a hook-score badge (sub-scores on hover or expand), the value-add checklist with applied/skipped marks, and its pacing flags with times (Playwright)",
+        "The clip's variants play side by side in the card, each with its hook score, and one can be picked as the export source (Playwright)",
+        "Per-platform approve toggles save, and stay saved after reload. 'Export approved' creates files only for approved platforms, and the card then shows per-platform export status (Playwright + files on disk)",
+        "The trend-reference form adds an entry that appears in the list and stays after reload. A bad URL shows an inline error (Playwright)",
+        "A per-job creator name field saves, and its value appears in the credit line of the next export's .txt"
+      ],
+      "passes": false,
+      "notes": "Keep F05/F06 behaviour: escaped text, in-place updates and shortcuts. Add a shortcut hint for per-platform approve."
+    },
+    {
+      "id": "F18",
+      "title": "SQLite clip database recording every exported clip and its choices, plus a post-URL field",
+      "priority": 14,
+      "area": [
+        "clipforge/db/**",
+        "clipforge/export/**",
+        "clipforge/server/app.py",
+        "clipforge/server/static/index.html",
+        "tests/test_db.py"
+      ],
+      "depends_on": [
+        "F15",
+        "F17"
+      ],
+      "acceptance": [
+        "Every export writes one row per (clip, platform) to the workspace's SQLite file with job, source file, creator, start/end, hook text and type, hook score, variant, value-adds applied, platform, export path and timestamp (test)",
+        "Exporting the same (clip, platform) again updates that row and creates no duplicate (test)",
+        "Pasting a post URL in a clip card's platform row saves it to the database, and it shows after reload. A non-http value is rejected inline (Playwright + test of the API)",
+        "The database file is created on first use. Deleting it and exporting again rebuilds it without errors. *.db is already git-ignored"
+      ],
+      "passes": false,
+      "notes": "Use the standard-library sqlite3 module (no ORM needed). Version the schema so F19 and F20 can add tables."
+    },
+    {
+      "id": "F19",
+      "title": "Import platform analytics CSV exports into the clip database",
+      "priority": 15,
+      "area": [
+        "clipforge/analytics/**",
+        "clipforge/cli.py",
+        "tests/test_analytics.py",
+        "tests/fixtures/analytics/**"
+      ],
+      "depends_on": [
+        "F18"
+      ],
+      "acceptance": [
+        "python -m clipforge.cli import-analytics <csv> --platform youtube|tiktok|instagram loads the fixture CSVs into per-clip, per-date snapshots (views, likes, comments, shares, and average view duration or retention when present) (test)",
+        "Rows are matched to clips by post URL or by the platform video id taken from the pasted URL. Unmatched rows are counted and listed in the command output, not silently dropped (test)",
+        "Importing the same CSV twice creates no duplicate snapshots (test)",
+        "A CSV missing a required column fails with a message naming the column and platform. Unknown extra columns are ignored (test)",
+        "The mapping from each platform's column names to fields is a data table that's easy to edit by hand"
+      ],
+      "passes": false,
+      "notes": "API connections are out of scope because they need Diego's credentials. The fixture headers are a best guess at each platform's export format; check them against a real export from Diego before relying on them."
+    },
+    {
+      "id": "F20",
+      "title": "Weekly ranking that feeds top performers and flops back into the few-shot library, with Diego approving each",
+      "priority": 16,
+      "area": [
+        "clipforge/learning/**",
+        "clipforge/highlight/backends.py",
+        "clipforge/server/app.py",
+        "clipforge/server/static/index.html",
+        "tests/test_learning.py"
+      ],
+      "depends_on": [
+        "F10",
+        "F19"
+      ],
+      "acceptance": [
+        "Over a chosen 7-day window, the ranking scores each clip against that creator's typical performance on that platform, so a small creator's hit isn't buried under a bigger creator's average clip (test with a fixture database)",
+        "The website's ranking view lists the top N and bottom N with their metrics and an approve button for each. A CSV upload on the same view runs the F19 import (Playwright)",
+        "Nothing is written to the examples library until Diego approves. Approving a top clip writes a positive example to examples/, and approving a flop writes a negative example to a separate negatives folder. Each decision is recorded in the database (test + Playwright)",
+        "The highlight prompt puts negative examples in a clearly labelled 'avoid' section and caps the total number of examples. With no negatives and no new examples, the built prompt is byte-for-byte the same as before this feature (test)",
+        "The existing 'export approved -> few-shot examples' button still works (existing test passes)"
+      ],
+      "passes": false,
+      "notes": "examples/README.txt says more than about 8 examples bloats the prompt. Pick the cap with that in mind and write the rule down."
+    }
+  ]
+}

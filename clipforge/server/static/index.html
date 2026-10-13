@@ -14,7 +14,7 @@
   body {
     background:var(--bg); color:var(--text);
     font-family:"JetBrains Mono","SF Mono",Menlo,Consolas,monospace;
-    font-size:14px; height:100vh; display:flex; flex-direction:column;
+    font-size:14px; height:100vh; height:100dvh; display:flex; flex-direction:column;
   }
   header {
     padding:14px 20px; border-bottom:1px solid var(--line);
@@ -31,7 +31,13 @@
     border:1px dashed var(--line); border-radius:8px; padding:14px;
     text-align:center; color:var(--dim); cursor:pointer;
   }
-  .upload:hover { border-color:var(--accent); color:var(--accent); }
+  .upload:hover, .upload.dragover { border-color:var(--accent); color:var(--accent); }
+  .upload.dragover { background:var(--panel2); border-style:solid; }
+  #sidebar.dragover { outline:2px dashed var(--accent); outline-offset:-4px; }
+  .upload progress { display:block; width:100%; height:6px; margin-top:8px; accent-color:var(--accent); }
+  #uploadmsg:empty { display:none; }
+  #uploadmsg { display:flex; flex-direction:column; gap:4px; }
+  #uploadmsg .err { margin:0; overflow-wrap:anywhere; }
   .job {
     background:var(--panel); border:1px solid var(--line); border-radius:8px;
     padding:10px 12px; cursor:pointer;
@@ -48,7 +54,7 @@
   }
   .stagebar span.done { color:var(--good); border-color:var(--good); }
   .stagebar span.now  { color:var(--warn); border-color:var(--warn); }
-  .clipgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(340px,1fr)); gap:16px; }
+  .clipgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(340px,100%),1fr)); gap:16px; }
   .clip {
     background:var(--panel); border:1px solid var(--line); border-radius:10px;
     padding:14px; display:flex; flex-direction:column; gap:10px;
@@ -76,141 +82,882 @@
   .err { color:var(--bad); font-size:12px; margin-bottom:12px; white-space:pre-wrap; }
   a.qa { color:var(--dim); font-size:11px; }
   #exportbar { margin:16px 0; display:flex; gap:10px; align-items:center; color:var(--dim); font-size:12px; }
+  [hidden] { display:none !important; }
+  #jobcount { color:var(--dim); font-size:12px; }
+  #file { display:none; }
+  .upload[aria-disabled="true"] { opacity:.6; cursor:progress; }
+  .job:focus-visible, .upload:focus-visible { outline:1px solid var(--accent); outline-offset:2px; }
+  .err.warn { color:var(--warn); }
+  .err button { margin-left:10px; }
+  button:disabled { opacity:.5; cursor:default; }
+  .clip .vslot { display:flex; flex-direction:column; }
+  .clip .trim .note { flex:1; }
+  #toasts {
+    position:fixed; right:16px; bottom:16px; z-index:10; width:min(360px,calc(100vw - 32px));
+    display:flex; flex-direction:column; gap:8px; pointer-events:none;
+  }
+  .toast {
+    background:var(--panel2); border:1px solid var(--line); border-left-width:3px;
+    border-radius:6px; padding:10px 12px; font-size:12px; line-height:1.5;
+    overflow-wrap:anywhere; box-shadow:0 4px 16px rgba(0,0,0,.4);
+  }
+  .toast.ok  { border-left-color:var(--good); }
+  .toast.err { border-left-color:var(--bad); color:var(--bad); }
+  .toast.info { border-left-color:var(--accent); }
+  .toolbar { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:14px; font-size:12px; color:var(--dim); }
+  .filters { display:flex; gap:6px; flex-wrap:wrap; }
+  .filters button { padding:6px 10px; font-size:11px; border-radius:20px; }
+  .filters button.on { border-color:var(--accent); color:var(--accent); }
+  .toolbar select {
+    background:var(--panel2); border:1px solid var(--line); color:var(--text);
+    font-family:inherit; font-size:11px; padding:5px 6px; border-radius:5px;
+  }
+  .clip.sel { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
+  .trim { flex-wrap:wrap; }
+  .trim button { padding:4px 8px; font-size:11px; }
+  .nomatch { color:var(--dim); margin:24px 0; text-align:center; }
+  #help {
+    position:fixed; top:64px; right:20px; z-index:20; width:min(340px,calc(100vw - 40px));
+    background:var(--panel2); border:1px solid var(--accent); border-radius:8px;
+    padding:14px 16px; box-shadow:0 8px 28px rgba(0,0,0,.5); font-size:12px;
+  }
+  #help h2 { font-size:13px; color:var(--accent); margin-bottom:10px; }
+  #help dl { display:grid; grid-template-columns:auto 1fr; gap:6px 14px; }
+  #help dt { color:var(--accent); font-weight:bold; white-space:nowrap; }
+  #help dd { margin:0; color:var(--text); }
+  #help p { color:var(--dim); margin:10px 0; line-height:1.5; }
+  /* phone: the job list sits above the clip detail instead of beside it */
+  @media (max-width:700px) {
+    header { flex-wrap:wrap; padding:10px 16px; gap:8px 12px; }
+    header .metrics { margin-left:0; flex-basis:100%; order:3; }
+    main { flex-direction:column; }
+    #sidebar {
+      width:auto; max-height:34%; flex:none; border-right:0;
+      border-bottom:1px solid var(--line);
+    }
+    #detail { padding:14px 16px; min-width:0; }
+    .clip { padding:12px; min-width:0; }
+    .clip video { max-height:300px; }
+    .btnrow button { flex:1; padding:12px 14px; }
+    .trim input { width:64px; }
+    .trim .note { min-width:0; flex-basis:100%; }
+    #help { top:auto; bottom:12px; right:12px; max-height:70vh; overflow-y:auto; }
+  }
 </style>
 </head>
 <body>
 <header>
   <h1>CLIPFORGE</h1>
-  <span id="jobcount" style="color:var(--dim);font-size:12px"></span>
+  <span id="jobcount"></span>
   <span class="metrics" id="globalmetrics"></span>
+  <button type="button" id="helpbtn" aria-expanded="false" aria-controls="help">? shortcuts</button>
 </header>
 <main>
   <div id="sidebar">
-    <div class="upload" id="uploadbox">+ upload long-form video</div>
-    <input type="file" id="file" accept="video/*" style="display:none">
+    <div class="upload" id="uploadbox" role="button" tabindex="0">
+      <span id="uploadlabel"></span>
+      <progress id="uploadbar" max="100" value="0" hidden></progress>
+    </div>
+    <div id="uploadmsg" aria-live="polite"></div>
+    <input type="file" id="file" multiple>
     <div id="joblist"></div>
   </div>
   <div id="detail"><div class="empty">select or upload a video →</div></div>
 </main>
+<div id="help" role="dialog" aria-label="Keyboard shortcuts" hidden></div>
+<div id="toasts" aria-live="polite"></div>
 <script>
+"use strict";
+// All server-supplied text goes into the DOM through textContent / .value
+// only (never as HTML), so a filename, hook or note is always shown literally.
 const $ = s => document.querySelector(s);
 const STAGES = ["ingested","transcribed","candidates_ready","refined","reframed","rendered"];
-let currentJob = null, pollTimer = null;
+const POLL_MS = 4000;
+const UPLOAD_LABEL = "+ upload long-form video";
+let currentJob = null;       // job whose detail pane is shown
+let uploading = false;
+
+function h(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v === null || v === undefined || v === false) continue;
+    if (/^on/i.test(k)) throw new Error("event handler attributes are not allowed: " + k);
+    if (k === "class") e.className = v;
+    else if (k === "text") e.textContent = v;
+    else e.setAttribute(k, v);
+  }
+  e.append(...kids);
+  return e;
+}
+
+// ---------- toasts ----------
+function toast(msg, kind = "ok") {
+  const box = $("#toasts");
+  const t = h("div", {class: "toast " + kind, role: kind === "err" ? "alert" : "status", text: msg});
+  box.append(t);
+  while (box.children.length > 4) box.firstChild.remove();
+  setTimeout(() => t.remove(), kind === "err" ? 7000 : 3000);
+}
+
+class Unreachable extends Error {}
 
 async function api(path, opts) {
-  const r = await fetch(path, opts);
-  if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
+  let r;
+  try { r = await fetch(path, opts); }
+  catch (_) { throw new Unreachable("could not reach the server"); }
+  if (!r.ok) {
+    let detail = r.statusText || ("HTTP " + r.status);
+    try {
+      const body = await r.json();
+      if (typeof body.detail === "string") detail = body.detail;
+      else if (body.detail) detail = JSON.stringify(body.detail);
+    } catch (_) { /* non-JSON error body */ }
+    throw new Error(detail);
+  }
   return r.json();
 }
 
+function errText(err) {
+  // only a failed fetch() means "unreachable"; a bug in this page must show up as itself
+  return err.message;
+}
+
 // ---------- upload ----------
-$("#uploadbox").onclick = () => $("#file").click();
-$("#file").onchange = async e => {
-  const f = e.target.files[0];
-  if (!f) return;
-  $("#uploadbox").textContent = "uploading…";
-  const fd = new FormData(); fd.append("file", f);
-  try {
-    const {job_id} = await api("/api/jobs", {method:"POST", body:fd});
-    currentJob = job_id;
-  } catch (err) { alert(err.message); }
-  $("#uploadbox").textContent = "+ upload long-form video";
-  refresh();
-};
+// Must list the same extensions as SUPPORTED_EXTENSIONS in
+// clipforge/ingest/ingest.py (tests/test_ui_static.py compares the two).
+const ACCEPTED_EXT = [".avi", ".m4v", ".mkv", ".mov", ".mp4", ".webm"];
+$("#file").accept = ACCEPTED_EXT.join(",");
 
-// ---------- job list ----------
-async function refresh() {
-  const jobs = await api("/api/jobs");
-  $("#jobcount").textContent = jobs.length + " jobs";
-  $("#joblist").innerHTML = jobs.map(j => `
-    <div class="job ${j.job_id===currentJob?"active":""}" onclick="openJob('${j.job_id}')">
-      <div class="name">${j.filename}</div>
-      <div class="stage ${j.failed?"failed":""}">
-        ${j.failed ? "FAILED" : j.stage}${j.progress && j.stage!=="rendered" ? " · "+j.progress : ""}
-        · ${Math.round(j.duration)}s
-      </div>
-    </div>`).join("");
-  const gm = await api("/api/metrics");
-  $("#globalmetrics").textContent = gm.total_reviewed
-    ? `approval ${(gm.overall_approval_rate*100).toFixed(0)}% · avg trim ${gm.avg_trim_adjustment_sec}s · ${gm.total_reviewed} reviewed`
-    : "";
-  if (currentJob) renderDetail();
+const UPLOAD_TIMEOUT_MS = 30 * 60 * 1000;   // whole request, including the server's ingest
+const uploadQueue = [];      // files waiting for their turn (one upload at a time)
+let uploadTotal = 0, uploadDone = 0;
+
+function isVideoName(name) {
+  const dot = name.lastIndexOf(".");
+  return dot >= 0 && ACCEPTED_EXT.includes(name.slice(dot).toLowerCase());
 }
-
-window.openJob = id => { currentJob = id; refresh(); };
-
-// ---------- detail ----------
-async function renderDetail() {
-  const j = await api("/api/jobs/" + currentJob);
-  const doneIdx = STAGES.indexOf(j.stage);
-  const bar = STAGES.map((s,i) =>
-    `<span class="${i<=doneIdx?"done":(i===doneIdx+1&&!j.failed?"now":"")}">${s}</span>`).join("");
-  let html = `<div class="stagebar">${bar}</div>`;
-  if (j.failed) html += `<div class="err">stage failed: ${j.error}
-<button onclick="rerun()">retry pipeline</button></div>`;
-  else if (j.stage !== "rendered")
-    html += `<div class="err" style="color:var(--warn)">${j.progress || "working…"}</div>`;
-
-  if (j.clips.length) {
-    const m = j.metrics;
-    html += `<div id="exportbar">
-      job metrics: ${m.reviewed}/${j.clips.length} reviewed
-      ${m.approval_rate!==null ? "· approval "+(m.approval_rate*100).toFixed(0)+"%" : ""}
-      · avg trim ${m.avg_trim_adjustment_sec}s
-      <button onclick="exportExamples()">export approved → few-shot examples</button>
-    </div>`;
-    html += `<div class="clipgrid">` + j.clips.map(c => clipCard(c)).join("") + `</div>`;
-  } else if (j.stage === "rendered") {
-    html += `<div class="empty">pipeline found no strong clips in this video</div>`;
-  }
-  $("#detail").innerHTML = html;
+function setUploadLabel(text, busy, pct) {
+  $("#uploadlabel").textContent = text;
+  $("#uploadbox").setAttribute("aria-disabled", busy ? "true" : "false");
+  const bar = $("#uploadbar");
+  bar.hidden = pct === undefined;
+  if (pct !== undefined) bar.value = pct;
 }
-
-function clipCard(c) {
-  const r = c.review;
-  return `<div class="clip">
-    ${c.video_ready
-      ? `<video controls preload="metadata" src="/api/jobs/${currentJob}/clips/${c.id}/video"></video>`
-      : `<div class="meta">rendering…</div>`}
-    <div class="hook">“${c.hook}”</div>
-    <div class="meta">
-      <span class="score">score ${c.score}</span> · ${c.type} · ${c.duration}s
-      · ${c.start.toFixed(1)}s → ${c.end.toFixed(1)}s<br>${c.reason}
-      ${c.video_ready ? ` · <a class="qa" href="/api/jobs/${currentJob}/clips/${c.id}/qa" target="_blank">QA sheet</a>` : ""}
-    </div>
-    <div class="trim">
-      trim: <input id="ts${c.id}" placeholder="start" value="${r?.adjusted_start ?? ""}">
-      <input id="te${c.id}" placeholder="end" value="${r?.adjusted_end ?? ""}">
-      <input id="tn${c.id}" placeholder="note" style="flex:1" value="${r?.note ?? ""}">
-    </div>
-    <div class="btnrow">
-      <button class="approve ${r?.decision==="approved"?"on":""}"
-        onclick="review(${c.id},'approved')">✓ approve</button>
-      <button class="reject ${r?.decision==="rejected"?"on":""}"
-        onclick="review(${c.id},'rejected')">✗ reject</button>
-    </div>
-  </div>`;
+function uploadMessage(text) {
+  $("#uploadmsg").append(h("div", {class: "err", role: "alert", text}));
 }
+function clearUploadMessages() { $("#uploadmsg").replaceChildren(); }
 
-window.review = async (cid, decision) => {
-  const g = id => { const v = $(id).value.trim(); return v === "" ? null : parseFloat(v); };
-  await api(`/api/jobs/${currentJob}/clips/${cid}/review`, {
-    method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({decision,
-      adjusted_start:g(`#ts${cid}`), adjusted_end:g(`#te${cid}`),
-      note: $(`#tn${cid}`).value})
+// POST one file with XMLHttpRequest, because fetch() cannot report upload
+// progress. onPct gets a whole percentage while the bytes go out.
+function postFile(file, onPct) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/jobs");
+    xhr.responseType = "text";
+    xhr.timeout = UPLOAD_TIMEOUT_MS;      // the queue must never wait forever
+    xhr.ontimeout = () => reject(new Error("the upload timed out"));
+    xhr.upload.onprogress = e => {
+      if (e.lengthComputable && e.total > 0) onPct(Math.min(100, Math.floor(e.loaded * 100 / e.total)));
+    };
+    xhr.upload.onload = () => onPct(100);
+    xhr.onerror = () => reject(new Unreachable("could not reach the server"));
+    xhr.onabort = xhr.onerror;
+    xhr.onload = () => {
+      let body = null;
+      try { body = JSON.parse(xhr.responseText); } catch (_) { /* non-JSON body */ }
+      if (xhr.status >= 200 && xhr.status < 300 && body && body.job_id) { resolve(body); return; }
+      let detail = xhr.statusText || ("HTTP " + xhr.status);
+      if (body && typeof body.detail === "string") detail = body.detail;
+      else if (body && body.detail) detail = JSON.stringify(body.detail);
+      reject(new Error(detail));
+    };
+    const fd = new FormData();
+    fd.append("file", file);
+    xhr.send(fd);
   });
+}
+
+// Accept files from the picker or a drop: reject non-videos on the spot (no
+// request), queue the rest. Uploads then run strictly one after another.
+function addFiles(files) {
+  const list = [...files];
+  if (!list.length) return;
+  if (!uploading) { clearUploadMessages(); uploadTotal = uploadDone = 0; }
+  for (const f of list) {
+    if (!isVideoName(f.name)) {
+      uploadMessage(`${f.name}: not a video file (accepted: ${ACCEPTED_EXT.join(" ")})`);
+      continue;
+    }
+    uploadQueue.push(f);
+    uploadTotal++;
+  }
+  if (!uploading && uploadQueue.length) pumpUploads();
+}
+
+async function pumpUploads() {
+  uploading = true;
+  while (uploadQueue.length) {
+    const f = uploadQueue.shift();
+    const tag = `${f.name}${uploadTotal > 1 ? ` (${uploadDone + 1}/${uploadTotal})` : ""}`;
+    setUploadLabel(`uploading ${tag} · 0%`, true, 0);
+    try {
+      const {job_id} = await postFile(f, pct => {
+        setUploadLabel(pct < 100 ? `uploading ${tag} · ${pct}%` : `uploaded ${tag} · 100% · ingesting…`, true, pct);
+      });
+      uploadDone++;
+      // don't pull the reviewer away from the clips they are working on
+      if (!currentJob) currentJob = job_id;
+      toast("uploaded " + f.name + " · processing", "info");
+      refresh();                         // the new job shows its pipeline progress
+    } catch (err) {
+      uploadTotal--;
+      uploadMessage(`${f.name}: ${errText(err)}`);
+    }
+  }
+  uploading = false;
+  setUploadLabel(UPLOAD_LABEL, false);
   refresh();
-};
+}
 
-window.rerun = async () => { await api(`/api/jobs/${currentJob}/rerun`, {method:"POST"}); refresh(); };
-window.exportExamples = async () => {
-  const r = await api(`/api/jobs/${currentJob}/export-examples`, {method:"POST"});
-  alert(`wrote ${r.written.length} example file(s) to ${r.examples_dir}`);
-};
+function pickFile() { $("#file").click(); }
+$("#uploadbox").addEventListener("click", pickFile);
+$("#uploadbox").addEventListener("keydown", e => {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickFile(); }
+});
+$("#file").addEventListener("change", e => {
+  const files = [...e.target.files];
+  e.target.value = "";                    // allow picking the same file again
+  addFiles(files);
+});
 
+// Drag and drop onto the sidebar. Only drags that carry files react; every
+// other drag is left alone. Dropping a file anywhere else on the page must
+// not make the browser navigate to it, so the window swallows those too.
+let dragDepth = 0;
+const hasFiles = e => !!e.dataTransfer && [...(e.dataTransfer.types || [])].includes("Files");
+function setDragOver(on) {
+  $("#sidebar").classList.toggle("dragover", on);
+  $("#uploadbox").classList.toggle("dragover", on);
+}
+const sidebar = $("#sidebar");
+sidebar.addEventListener("dragenter", e => {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  dragDepth++;
+  setDragOver(true);
+});
+sidebar.addEventListener("dragover", e => {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "copy";
+});
+sidebar.addEventListener("dragleave", e => {
+  if (!hasFiles(e)) return;
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) setDragOver(false);
+});
+sidebar.addEventListener("drop", e => {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  dragDepth = 0;
+  setDragOver(false);
+  addFiles(e.dataTransfer.files);
+});
+for (const type of ["dragover", "drop"]) {
+  window.addEventListener(type, e => { if (hasFiles(e)) e.preventDefault(); });
+}
+window.addEventListener("dragend", () => { dragDepth = 0; setDragOver(false); });
+
+// ---------- refresh + polling ----------
+// Polling runs only while some job reports running:true. refresh() decides
+// after every pass whether to schedule the next one.
+let pollTimer = null, refreshing = false, refreshAgain = false;
+let passStartedAt = 0;       // when the refresh pass now in flight began
+let wasPolling = false;      // the last successful job list had a running job
+let retriedAfterFail = false, lastRefreshAt = 0, offline = false;
+const RETRY_MS = 3000;
+
+async function refresh() {
+  if (refreshing) { refreshAgain = true; return; }
+  refreshing = true;
+  passStartedAt = Date.now();
+  clearTimeout(pollTimer); pollTimer = null;
+  let delay = null;            // ms until the next automatic refresh, if any
+  let failure = null;
+  let jobs = null;
+  try {
+    jobs = await api("/api/jobs");
+  } catch (err) { failure = err; }
+
+  if (jobs) {
+    wasPolling = jobs.some(j => j.running);
+    if (wasPolling) delay = POLL_MS;
+    try {
+      renderJobs(jobs);
+      const gm = await api("/api/metrics");
+      $("#globalmetrics").textContent = gm.total_reviewed
+        ? `approval ${(gm.overall_approval_rate*100).toFixed(0)}% · avg trim ${gm.avg_trim_adjustment_sec}s · ${gm.total_reviewed} reviewed`
+        : "";
+      if (currentJob) await renderDetail(currentJob);
+    } catch (err) { failure = err; }   // polling decision above stays valid
+  } else if (wasPolling) {
+    delay = POLL_MS;                   // we were watching a running job: keep trying
+  }
+  if (!failure) retriedAfterFail = false;
+  else if (delay === null && !retriedAfterFail) {
+    // something failed while nothing is polling: one retry, then focus/visibility
+    retriedAfterFail = true;
+    delay = RETRY_MS;
+  }
+
+  if (failure) {
+    if (!offline) toast(errText(failure), "err");
+    offline = true;
+  } else offline = false;
+  lastRefreshAt = Date.now();
+  refreshing = false;
+  if (delay !== null) pollTimer = setTimeout(refresh, delay);
+  if (refreshAgain) { refreshAgain = false; refresh(); }
+}
+
+// Coming back to the tab (or the window) is a cheap moment to re-check, and
+// recovers from a refresh that failed while nothing was being polled.
+function refreshIfStale() {
+  if (document.visibilityState === "visible" && !refreshing &&
+      Date.now() - lastRefreshAt > 1000) refresh();
+}
+document.addEventListener("visibilitychange", refreshIfStale);
+window.addEventListener("focus", refreshIfStale);
+
+// ---------- job list (updated in place) ----------
+const jobEls = new Map();    // job_id -> {el, name, stage}
+
+function buildJobEl(id) {
+  const name = h("div", {class: "name"});
+  const stage = h("div", {class: "stage"});
+  const el = h("div", {class: "job", role: "button", tabindex: "0", "data-job": id}, name, stage);
+  return {el, name, stage};
+}
+
+function renderJobs(jobs) {
+  $("#jobcount").textContent = jobs.length + (jobs.length === 1 ? " job" : " jobs");
+  const list = $("#joblist");
+  const seen = new Set();
+  let prev = null;
+  for (const j of jobs) {
+    seen.add(j.job_id);
+    let e = jobEls.get(j.job_id);
+    if (!e) { e = buildJobEl(j.job_id); jobEls.set(j.job_id, e); }
+    e.el.classList.toggle("active", j.job_id === currentJob);
+    e.name.textContent = j.filename;
+    e.name.title = j.filename;
+    const failed = j.failed && !j.running;      // a retry in progress is not "failed"
+    e.stage.classList.toggle("failed", failed);
+    e.stage.textContent =
+      (failed ? "FAILED" : j.stage) +
+      (j.progress && j.stage !== "rendered" ? " · " + j.progress : "") +
+      " · " + Math.round(j.duration) + "s";
+    const want = prev ? prev.nextSibling : list.firstChild;
+    if (want !== e.el) list.insertBefore(e.el, want);
+    prev = e.el;
+  }
+  for (const [id, e] of jobEls) if (!seen.has(id)) { e.el.remove(); jobEls.delete(id); }
+}
+
+function openJob(id) {
+  if (!id || id === currentJob) return;
+  currentJob = id;
+  // Drop the previous job's pane right now: until the new job's detail has
+  // loaded nothing on screen may be clickable against the wrong job.
+  D = null; cards.clear(); order = []; selected = null;
+  $("#detail").replaceChildren(h("div", {class: "empty", text: "loading…"}));
+  for (const [jid, e] of jobEls) e.el.classList.toggle("active", jid === id);
+  refresh();
+}
+$("#joblist").addEventListener("click", e => {
+  const el = e.target.closest(".job");
+  if (!el) return;
+  openJob(el.dataset.job);
+  el.blur();            // after a mouse click, Space and the letter keys belong to the clips
+});
+$("#joblist").addEventListener("keydown", e => {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  const el = e.target.closest(".job");
+  if (el) { e.preventDefault(); openJob(el.dataset.job); }
+});
+
+// ---------- detail pane (skeleton built once per job, then updated in place) ----------
+let D = null;                // refs to the current job's skeleton
+const cards = new Map();     // clip id -> card refs
+let order = [];              // clip ids in the order the cards are laid out
+let selected = null;         // clip id the keyboard shortcuts act on
+
+// ---------- view preferences (filter + sort), kept across reloads ----------
+const PREFS_KEY = "clipforge.view";
+const FILTERS = ["all", "unreviewed", "approved", "rejected"];
+const SORTS = {
+  score: {label: "score (high → low)",
+          cmp: (a, b) => (b.scoreNum - a.scoreNum) || (a.start - b.start) || (a.id - b.id)},
+  time:  {label: "time in source",
+          cmp: (a, b) => (a.start - b.start) || (a.id - b.id)},
+};
+const view = {filter: "all", sort: "score"};
+try {
+  const p = JSON.parse(localStorage.getItem(PREFS_KEY) || "null");
+  if (p && FILTERS.includes(p.filter)) view.filter = p.filter;
+  if (p && Object.hasOwn(SORTS, p.sort)) view.sort = p.sort;
+} catch (_) { /* storage blocked or corrupt: keep the defaults */ }
+function savePrefs() {
+  try { localStorage.setItem(PREFS_KEY, JSON.stringify(view)); }
+  catch (_) { /* storage blocked: the choice just lasts until reload */ }
+}
+
+function buildSkeleton(jobId) {
+  const stagebar = h("div", {class: "stagebar"}, ...STAGES.map(s => h("span", {text: s})));
+  const status = h("div", {class: "err", hidden: ""});
+  const statusText = h("span");
+  const retry = h("button", {type: "button", "data-act": "rerun", "data-job": jobId, text: "retry pipeline"});
+  status.append(statusText, retry);
+  const exportText = h("span");
+  const exportBtn = h("button", {type: "button", "data-act": "export", "data-job": jobId,
+                                 text: "export approved → few-shot examples"});
+  const exportbar = h("div", {id: "exportbar", hidden: ""}, exportText, exportBtn);
+  const filterBtns = new Map(FILTERS.map(f =>
+    [f, h("button", {type: "button", "data-filter": f, "aria-pressed": "false"})]));
+  const sortSel = h("select", {"aria-label": "sort clips", "data-sort": ""},
+    ...Object.entries(SORTS).map(([v, s]) => h("option", {value: v, text: s.label})));
+  const toolbar = h("div", {class: "toolbar", hidden: ""},
+    h("div", {class: "filters", role: "group", "aria-label": "filter clips"}, ...filterBtns.values()),
+    h("label", {}, "sort ", sortSel));
+  const grid = h("div", {class: "clipgrid", hidden: ""});
+  const nomatch = h("div", {class: "nomatch", hidden: "", text: "no clips match this filter"});
+  const empty = h("div", {class: "empty", hidden: "", text: "pipeline found no strong clips in this video"});
+  $("#detail").replaceChildren(stagebar, status, exportbar, toolbar, grid, nomatch, empty);
+  cards.clear(); order = []; selected = null;
+  D = {jobId, stagebar, status, statusText, retry, exportText, exportbar, toolbar,
+       filterBtns, sortSel, grid, nomatch, empty};
+}
+
+async function renderDetail(jobId) {
+  const j = await api("/api/jobs/" + encodeURIComponent(jobId));
+  if (jobId !== currentJob) return;       // user switched jobs while we waited
+  if (!D || D.jobId !== jobId) buildSkeleton(jobId);
+
+  // a rerun leaves the old error in the manifest while it runs: show progress, not the error
+  const failed = j.failed && !j.running;
+  const doneIdx = STAGES.indexOf(j.stage);
+  [...D.stagebar.children].forEach((span, i) => {
+    span.className = i <= doneIdx ? "done" : (i === doneIdx + 1 && !failed ? "now" : "");
+  });
+
+  if (failed) {
+    D.status.hidden = false;
+    D.status.className = "err";
+    D.statusText.textContent = "stage failed: " + (j.error || "unknown error");
+    D.retry.hidden = false;
+    D.retry.disabled = false;
+  } else if (j.running || j.stage !== "rendered") {
+    D.status.hidden = false;
+    D.status.className = "err warn";
+    D.statusText.textContent = j.progress || "working…";
+    D.retry.hidden = true;
+  } else {
+    D.status.hidden = true;
+  }
+
+  const hasClips = j.clips.length > 0;
+  D.exportbar.hidden = D.toolbar.hidden = D.grid.hidden = !hasClips;
+  D.empty.hidden = hasClips || j.stage !== "rendered";
+  if (hasClips) {
+    const m = j.metrics;
+    D.exportText.textContent =
+      `job metrics: ${m.reviewed}/${j.clips.length} reviewed` +
+      (m.approval_rate !== null ? " · approval " + (m.approval_rate*100).toFixed(0) + "%" : "") +
+      ` · avg trim ${m.avg_trim_adjustment_sec}s`;
+  }
+  syncClips(j);
+}
+
+function syncClips(j) {
+  const seen = new Set();
+  for (const c of j.clips) {
+    seen.add(c.id);
+    let card = cards.get(c.id);
+    if (!card) { card = buildCard(c.id, j.job_id); cards.set(c.id, card); }
+    updateCard(card, c, j.job_id);
+  }
+  // If the selected clip is going away, move to the clip that now sits at its
+  // place in the old order (the next one, else the previous one).
+  if (selected !== null && !seen.has(selected)) {
+    const i = order.indexOf(selected);
+    const next = order.slice(i + 1).find(id => seen.has(id));
+    const prev = order.slice(0, Math.max(i, 0)).reverse().find(id => seen.has(id));
+    selected = next !== undefined ? next : (prev !== undefined ? prev : null);
+  }
+  for (const [id, card] of cards) if (!seen.has(id)) { card.el.remove(); cards.delete(id); }
+  layout();
+  applyView();
+}
+
+// Put the cards in the chosen sort order. Cards already in place are not
+// touched, so a refresh never moves a playing video.
+function layout() {
+  const list = [...cards.values()].sort(SORTS[view.sort].cmp);
+  order = list.map(c => c.id);
+  let prev = null;
+  for (const card of list) {
+    const want = prev ? prev.nextSibling : D.grid.firstChild;
+    if (want !== card.el) D.grid.insertBefore(card.el, want);
+    prev = card.el;
+  }
+}
+
+// Show only the cards that pass the filter, refresh the counts, and keep a
+// visible clip selected.
+function applyView() {
+  if (!D) return;
+  const decisionOf = c => c.decision || "unreviewed";
+  const counts = {all: cards.size, unreviewed: 0, approved: 0, rejected: 0};
+  for (const c of cards.values()) counts[decisionOf(c)]++;
+  for (const [f, b] of D.filterBtns) {
+    b.textContent = `${f} (${counts[f]})`;
+    b.dataset.count = counts[f];
+    b.setAttribute("aria-pressed", f === view.filter ? "true" : "false");
+    b.classList.toggle("on", f === view.filter);
+  }
+  D.sortSel.value = view.sort;
+  for (const c of cards.values()) {
+    const show = view.filter === "all" || decisionOf(c) === view.filter;
+    if (!show && !c.el.hidden && c.video) c.video.pause();
+    c.el.hidden = !show;
+  }
+  D.nomatch.hidden = !cards.size || counts[view.filter] > 0;
+  ensureSelection();
+}
+
+// ---------- selection ----------
+function visibleIds() {
+  return order.filter(id => cards.has(id) && !cards.get(id).el.hidden);
+}
+function selectedCard() { return selected === null ? null : cards.get(selected) || null; }
+
+function select(id, scroll) {
+  if (id !== selected) {
+    const prev = selectedCard();
+    if (prev && prev.video) prev.video.pause();     // never leave a clip playing off-selection
+    selected = id;
+  }
+  for (const c of cards.values()) {
+    const on = c.id === selected;
+    c.el.classList.toggle("sel", on);
+    if (on) c.el.setAttribute("aria-current", "true"); else c.el.removeAttribute("aria-current");
+  }
+  const card = selectedCard();
+  if (scroll && card) card.el.scrollIntoView({block: "nearest"});
+}
+
+// Keep the selection on a visible card. When the selected card has just left
+// the view (approved under "unreviewed", filter changed) move to the next
+// visible one after it, else the nearest one before it.
+function ensureSelection() {
+  const vis = visibleIds();
+  if (selected !== null && vis.includes(selected)) { select(selected, false); return; }
+  let next = null;
+  if (selected !== null) {
+    const i = order.indexOf(selected);
+    next = order.slice(i + 1).find(id => vis.includes(id));
+    if (next === undefined) next = order.slice(0, Math.max(i, 0)).reverse().find(id => vis.includes(id));
+    if (next === undefined) next = null;
+  }
+  if (next === null && vis.length) next = vis[0];
+  select(next, true);
+}
+
+function move(delta) {
+  const vis = visibleIds();
+  if (!vis.length) return false;
+  const i = vis.indexOf(selected);
+  const next = i < 0 ? vis[0] : vis[Math.min(vis.length - 1, Math.max(0, i + delta))];
+  select(next, true);
+  return true;
+}
+
+function buildCard(id, jobId) {
+  const field = (name, ph, cls) =>
+    h("input", {placeholder: ph, class: cls, "data-field": name, autocomplete: "off"});
+  const slot = h("div", {class: "vslot"});
+  const hook = h("div", {class: "hook"});
+  const score = h("span", {class: "score"});
+  const info = h("span");
+  const reason = h("span");
+  const qa = h("a", {class: "qa", target: "_blank", rel: "noopener", text: "QA sheet"});
+  const qaWrap = h("span", {hidden: ""}, " · ", qa);
+  const meta = h("div", {class: "meta"}, score, info, h("br"), reason, qaWrap);
+  const ts = field("start", "start"), te = field("end", "end"), tn = field("note", "note", "note");
+  const setBtn = (act, text, title) => h("button", {type: "button", "data-act": act, text, title});
+  const approve = h("button", {type: "button", class: "approve", "data-act": "approved", text: "✓ approve"});
+  const reject = h("button", {type: "button", class: "reject", "data-act": "rejected", text: "✗ reject"});
+  const el = h("div", {class: "clip", "data-clip": id, "data-job": jobId},
+    slot, hook, meta,
+    h("div", {class: "trim"}, "trim: ",
+      ts, setBtn("setstart", "set start", "use the video's current time ( [ )"),
+      te, setBtn("setend", "set end", "use the video's current time ( ] )"), tn),
+    h("div", {class: "btnrow"}, approve, reject));
+  return {id, jobId, el, slot, video: null, scoreNum: 0, start: 0, decision: null, localAt: 0, hook, score, info, reason, qa, qaWrap, ts, te, tn, approve, reject};
+}
+
+// Fill a field from the server unless the reviewer is editing it.
+function setField(input, value) {
+  const v = value === null || value === undefined ? "" : String(value);
+  input.dataset.server = v;                       // last value the server reported
+  if (input.dataset.dirty === "1" || document.activeElement === input) return;
+  if (input.value !== v) input.value = v;
+}
+
+// Show a decision on a card. The server's answer wins, except that one which
+// was already on its way when the reviewer decided locally (see review()).
+function setDecision(card, decision) {
+  card.decision = decision;
+  card.approve.classList.toggle("on", decision === "approved");
+  card.reject.classList.toggle("on", decision === "rejected");
+}
+
+function updateCard(card, c, jobId) {
+  const r = c.review;
+  card.scoreNum = c.score;
+  card.start = c.start;      // the rendered video begins at this source time
+  card.hook.textContent = `“${c.hook}”`;
+  card.score.textContent = "score " + c.score;
+  card.info.textContent = ` · ${c.type} · ${c.duration}s · ${c.start.toFixed(1)}s → ${c.end.toFixed(1)}s`;
+  card.reason.textContent = c.reason ? c.reason : "";
+  card.qaWrap.hidden = !c.video_ready;
+  const base = `/api/jobs/${encodeURIComponent(jobId)}/clips/${c.id}`;
+  if (c.video_ready) {
+    card.qa.href = base + "/qa";
+    // create the <video> once; later refreshes must not touch it or playback restarts
+    if (!card.video) {
+      card.video = h("video", {controls: "", preload: "metadata", src: base + "/video"});
+      card.slot.replaceChildren(card.video);
+    }
+  } else if (!card.video && !card.slot.firstChild) {
+    card.slot.append(h("div", {class: "meta", text: "rendering…"}));
+  }
+  setField(card.ts, r?.adjusted_start);
+  setField(card.te, r?.adjusted_end);
+  setField(card.tn, r?.note);
+  if (!(card.localAt > passStartedAt)) setDecision(card, r ? r.decision : null);
+}
+
+// remember which fields the reviewer has typed into, so polling never overwrites them
+$("#detail").addEventListener("input", e => {
+  if (e.target.dataset && e.target.dataset.field) e.target.dataset.dirty = "1";
+});
+// ...but once the reviewer leaves a field holding what the server has, it is clean again
+$("#detail").addEventListener("focusout", e => {
+  const t = e.target;
+  if (t.dataset && t.dataset.dirty === "1" && t.value === t.dataset.server) delete t.dataset.dirty;
+});
+
+// A mouse click leaves focus on the button it hit, where Space would press the
+// same button again. detail is 0 for keyboard-made clicks, which keep focus.
+function dropFocusAfterMouse(e, el) { if (e.detail > 0) el.blur(); }
+
+$("#detail").addEventListener("click", e => {
+  const clipEl = e.target.closest(".clip");
+  if (clipEl) {
+    const card = cards.get(Number(clipEl.dataset.clip));
+    if (card && card.el === clipEl) select(card.id, false);
+  }
+  const flt = e.target.closest("button[data-filter]");
+  if (flt) {
+    view.filter = flt.dataset.filter;
+    savePrefs();
+    applyView();
+    dropFocusAfterMouse(e, flt);
+    return;
+  }
+  const btn = e.target.closest("button[data-act]");
+  if (!btn || btn.disabled) return;
+  const act = btn.dataset.act;
+  // every action targets the job its own element was built for, never "whatever is open now"
+  if (act === "rerun") {
+    btn.disabled = true;               // re-enabled by the next refresh
+    rerun(btn.dataset.job);
+  }
+  else if (act === "export") exportExamples(btn.dataset.job);
+  else {
+    const el = btn.closest(".clip");
+    if (!el) return;
+    if (act === "approved" || act === "rejected") review(el.dataset.job, Number(el.dataset.clip), act);
+    else if (act === "setstart" || act === "setend") {
+      const card = cards.get(Number(el.dataset.clip));
+      if (card && card.el === el) setTrimFromPlayhead(card, act === "setstart" ? "start" : "end");
+    }
+    dropFocusAfterMouse(e, btn);
+  }
+});
+$("#detail").addEventListener("change", e => {
+  if (!e.target.matches("select[data-sort]")) return;
+  if (!Object.hasOwn(SORTS, e.target.value)) return;
+  view.sort = e.target.value;
+  savePrefs();
+  layout();
+  applyView();
+  const card = selectedCard();
+  if (card) card.el.scrollIntoView({block: "nearest"});
+  e.target.blur();                    // so the arrow keys go back to selecting clips
+});
+
+// ---------- actions ----------
+async function review(jobId, cid, decision) {
+  const card = cards.get(cid);
+  if (!card || card.jobId !== jobId || card.saving) return;
+  const num = input => {
+    const v = input.value.trim();
+    return v === "" ? null : Number(v);
+  };
+  const start = num(card.ts), end = num(card.te);
+  if ((start !== null && !Number.isFinite(start)) || (end !== null && !Number.isFinite(end))) {
+    toast("trim start/end must be numbers", "err");
+    return;
+  }
+  if (start !== null && end !== null && start >= end) {
+    toast("trim start must be before trim end", "err");
+    return;
+  }
+  const sent = {ts: card.ts.value, te: card.te.value, tn: card.tn.value};
+  card.saving = true;
+  card.approve.disabled = card.reject.disabled = true;
+  try {
+    await api(`/api/jobs/${encodeURIComponent(jobId)}/clips/${cid}/review`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({decision, adjusted_start: start, adjusted_end: end, note: sent.tn})
+    });
+    // fields now match the server, unless the reviewer kept typing meanwhile
+    for (const k of ["ts", "te", "tn"]) {
+      if (card[k].value === sent[k]) { delete card[k].dataset.dirty; card[k].dataset.server = sent[k]; }
+    }
+    toast(`clip ${cid + 1} ${decision} · saved`, "ok");
+    // show it now (the filter, counts and selection follow) instead of
+    // waiting for the next refresh to come back
+    card.localAt = Date.now();
+    setDecision(card, decision);
+    if (cards.get(cid) === card) applyView();
+    refresh();
+  } catch (err) {
+    toast("save failed: " + errText(err), "err");
+  }
+  card.saving = false;
+  card.approve.disabled = card.reject.disabled = false;
+}
+
+// Trim fields are absolute source seconds. The rendered clip starts at the
+// clip's source start, so the playhead at t seconds is source time start + t.
+function fmtSec(x) { return String(Number(x.toFixed(3))); }
+
+function setTrimFromPlayhead(card, which) {
+  const v = card.video;
+  if (!v || v.readyState < 1) { toast("the video is not loaded yet", "err"); return; }
+  const input = which === "start" ? card.ts : card.te;
+  input.value = fmtSec(card.start + v.currentTime);
+  input.dataset.dirty = "1";               // polling must not overwrite it
+}
+
+function decideSelected(decision) {
+  const card = selectedCard();
+  if (!card) return false;
+  review(card.jobId, card.id, decision);
+  return true;
+}
+function togglePlaySelected() {
+  const v = selectedCard()?.video;
+  if (!v) return false;
+  if (v.paused) v.play().catch(() => {}); else v.pause();
+  return true;
+}
+function trimSelected(which) {
+  const card = selectedCard();
+  if (!card) return false;
+  setTrimFromPlayhead(card, which);
+  return true;
+}
+
+// ---------- keyboard shortcuts ----------
+// One table drives both the key handler and the help panel, so they cannot
+// drift apart. `repeat: true` marks keys that may auto-repeat when held.
+// run() returns false when there was nothing to act on, so the browser keeps
+// the key's normal job (Space scrolls the page when no clip is selected).
+const SHORTCUTS = [
+  {keys: ["a"], label: "A", desc: "approve the selected clip", run: () => decideSelected("approved")},
+  {keys: ["r"], label: "R", desc: "reject the selected clip", run: () => decideSelected("rejected")},
+  {keys: [" "], label: "Space", desc: "play / pause the selected clip", run: togglePlaySelected},
+  {keys: ["j", "ArrowDown"], label: "J or Down", desc: "select the next clip", repeat: true, run: () => move(1)},
+  {keys: ["k", "ArrowUp"], label: "K or Up", desc: "select the previous clip", repeat: true, run: () => move(-1)},
+  {keys: ["["], label: "[", desc: "set trim start from the video's current time", run: () => trimSelected("start")},
+  {keys: ["]"], label: "]", desc: "set trim end from the video's current time", run: () => trimSelected("end")},
+  {keys: ["?"], label: "?", desc: "show or hide this help", run: () => toggleHelp()},
+  {keys: ["Escape"], label: "Esc", desc: "close this help", run: () => helpOpen() && toggleHelp(false)},
+];
+const KEYMAP = new Map();
+for (const s of SHORTCUTS) for (const k of s.keys) KEYMAP.set(k, s);
+
+function helpOpen() { return !$("#help").hidden; }
+function toggleHelp(open) {
+  const panel = $("#help");
+  const show = open === undefined ? panel.hidden : open;
+  panel.hidden = !show;
+  $("#helpbtn").setAttribute("aria-expanded", show ? "true" : "false");
+  return true;
+}
+$("#help").append(
+  h("h2", {text: "Keyboard shortcuts"}),
+  h("dl", {}, ...SHORTCUTS.flatMap(s => [h("dt", {text: s.label}), h("dd", {text: s.desc})])),
+  h("p", {text: "Shortcuts pause while the cursor is in a field. Trim values are absolute seconds in the source video."}),
+  h("button", {type: "button", id: "helpclose", text: "close"}));
+$("#helpbtn").addEventListener("click", () => toggleHelp());
+$("#helpclose").addEventListener("click", () => toggleHelp(false));
+
+document.addEventListener("keydown", e => {
+  if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;
+  const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  const s = KEYMAP.get(key);
+  if (!s || (e.repeat && !s.repeat)) return;
+  const t = e.target;
+  // while the help is open it is modal for the keyboard: only ? and Esc work,
+  // and Esc closes it even from inside a field
+  if (helpOpen()) {
+    if (key !== "Escape" && key !== "?") return;
+    if (key === "?" && t.closest && t.closest("input, textarea, select, [contenteditable]")) return;
+    e.preventDefault();
+    s.run();
+    return;
+  }
+  // never while typing, and not where the browser already gives the key a job
+  if (t.closest && t.closest("input, textarea, select, [contenteditable]")) return;
+  if (t.isContentEditable) return;
+  if (key === " " && t.closest && t.closest("button, a[href], video, [role=button]")) return;
+  if ((key === "ArrowUp" || key === "ArrowDown") && t.closest && t.closest("video")) return;
+  if (s.run() !== false) e.preventDefault();
+});
+
+async function rerun(jobId) {
+  try {
+    await api(`/api/jobs/${encodeURIComponent(jobId)}/rerun`, {method: "POST"});
+    toast("pipeline restarted", "info");
+  } catch (err) { toast("retry failed: " + errText(err), "err"); }
+  refresh();
+}
+
+async function exportExamples(jobId) {
+  try {
+    const r = await api(`/api/jobs/${encodeURIComponent(jobId)}/export-examples`, {method: "POST"});
+    toast(`wrote ${r.written.length} example file(s) to ${r.examples_dir}`, "ok");
+  } catch (err) { toast("export failed: " + errText(err), "err"); }
+}
+
+setUploadLabel(UPLOAD_LABEL, false);
 refresh();
-pollTimer = setInterval(refresh, 4000);
 </script>
 </body>
 </html>

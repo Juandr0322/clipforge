@@ -24,7 +24,7 @@ flowchart LR
 **Tech stack:** Python · faster-whisper · Anthropic Claude API · MediaPipe / OpenCV ·
 ffmpeg + libass · FastAPI · Pydantic · pytest · GitHub Actions
 
-## Status: all 7 modules complete — 117 tests passing
+## Status: all 7 modules complete — 229 tests passing (incl. browser tests)
 
 | Module | What it does |
 |---|---|
@@ -46,8 +46,8 @@ pip install mediapipe          # optional, better face tracking than haar
 export ANTHROPIC_API_KEY=...   # for real highlight detection
 ```
 
-On Windows PowerShell, set the key with `$env:ANTHROPIC_API_KEY="..."`.
-See `.env.example` for every setting; never commit a real `.env`.
+Or copy `.env.example` to `.env` and put the key there: the CLI loads it
+automatically (real environment variables win). `.env` is git-ignored.
 
 ## Run the web app (recommended)
 
@@ -55,6 +55,18 @@ See `.env.example` for every setting; never commit a real `.env`.
 python -m clipforge.cli serve
 # open http://localhost:8000 — upload a video, wait, review clips
 ```
+
+The review site is built for getting through a batch fast:
+
+- **Keyboard review:** `J`/`K` next/previous clip, `A` approve, `R` reject,
+  `Space` play, `[` / `]` set trim start/end from the playhead, `?` help
+- **Filter and sort:** unreviewed / approved / rejected with counts; sort by score or time
+- **Upload:** drag and drop (several files queue up), live progress, clear errors
+- **Live updates without interruptions:** videos keep playing and half-typed
+  notes survive background refreshes; the page stops polling when nothing runs
+- **Works on a phone** (390px layout)
+- **Hardened:** all text escaped, job/clip ids validated against path traversal,
+  concurrency-safe review saves (Windows-safe file replace), no internal paths in errors
 
 Engine overrides via env: `CLIPFORGE_ASR` (whisper:small|whisper:medium|mock),
 `CLIPFORGE_HL` (anthropic|mock), `CLIPFORGE_DETECTOR` (mediapipe|haar),
@@ -93,10 +105,39 @@ header): **approval rate** should rise, **avg trim adjustment** should fall.
 - Engines (ASR / LLM / face detector) are swappable interfaces with mock
   implementations, so the entire pipeline is testable offline.
 
+Full stage-by-stage map: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+## Built with an AI agent team
+
+Development runs through a small team of Claude Code agents defined in
+[`.claude/`](.claude/) (details in [`docs/AGENT_TEAM.md`](docs/AGENT_TEAM.md)):
+
+| Agent | Job |
+|---|---|
+| planner | turns goals into [`docs/SPEC.md`](docs/SPEC.md) + [`docs/features.json`](docs/features.json) with testable acceptance criteria |
+| builder | implements one feature per branch, with tests |
+| reviewer | fresh-context code review of the diff; can fail a feature |
+| tester | runs the suite and drives the real site in a browser (Playwright) |
+| explore | cheap read-only lookups |
+
+Every feature goes builder → reviewer → merge → tester, capped at two fix
+rounds. Findings are logged in [`docs/findings.log`](docs/findings.log), and
+`/retro` turns repeated mistakes into rules in `docs/LESSONS.md` (human-approved).
+Real catches so far: a path-traversal read outside the workspace, reviews landing
+on the wrong job after switching jobs, lost reviews under concurrent saves, a
+Windows-only file-replace race, and a flaky test traced to an out-of-range ffmpeg argument.
+
 ## Testing
 
 ```bash
-python -m pytest tests/ -q     # 117 tests, fully offline (mock engines)
+python -m pytest tests/ -q     # fully offline (mock engines); lint: python -m pyflakes clipforge tests
+```
+
+Browser tests (Playwright, ~15 min) are opt-in:
+
+```bash
+pip install -r requirements-dev.txt && python -m playwright install chromium
+CLIPFORGE_BROWSER_TESTS=1 python -m pytest tests/test_ui_browser.py -q
 ```
 
 ## Roadmap
@@ -110,7 +151,8 @@ Next upgrades, informed by 2026 short-form platform research:
 - [ ] Word-chunked captions and a pacing check
 - [ ] Hook variants and loop-point detection
 - [ ] Per-platform exports
-- [ ] Review UI as a control panel
+- [x] Review website: fast keyboard review, drag-and-drop upload, phone layout, security hardening
+- [ ] Review UI as a control panel (hook scores, variants, per-platform approval)
 - [ ] Learning loop: clip database + real performance data fed back into highlight selection
 
 ## Scaling later (deliberately not built yet)

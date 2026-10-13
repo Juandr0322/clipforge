@@ -11,7 +11,7 @@ from __future__ import annotations
 import abc
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal
 
 import numpy as np
 from pydantic import BaseModel, Field, model_validator
@@ -73,12 +73,12 @@ class CropPath(BaseModel):
 
     def save(self, path: Path) -> None:
         tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(self.model_dump_json(indent=2))
+        tmp.write_text(self.model_dump_json(indent=2), encoding="utf-8")
         tmp.replace(path)
 
     @classmethod
     def load(cls, path: Path) -> "CropPath":
-        return cls.model_validate_json(path.read_text())
+        return cls.model_validate_json(path.read_text(encoding="utf-8"))
 
 
 # ---------------------------------------------------------------- detectors

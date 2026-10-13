@@ -65,7 +65,8 @@ def load_examples(examples_dir: Path | None) -> str:
         return ""
     blocks = []
     for f in sorted(examples_dir.glob("*.txt")):
-        blocks.append(f"--- example: {f.stem} ---\n{f.read_text().strip()}")
+        text = f.read_text(encoding="utf-8").strip()
+        blocks.append(f"--- example: {f.stem} ---\n{text}")
     return "\n\n".join(blocks)
 
 

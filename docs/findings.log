@@ -1,0 +1,26 @@
+# date | feature | reviewer/tester | severity | short description
+2026-10-12 | F01 | reviewer | MINOR | CLI test read real ~/clipforge-workspace (no --workspace) and swallowed all exceptions
+2026-10-12 | F01 | reviewer | MINOR | import-isolation and .env.example tests used weak checks (substring match, single stub)
+2026-10-12 | F02 | reviewer | MINOR | root-cause wording imprecise: only x1 was out of range, filter is otherwise deterministic
+2026-10-12 | F03 | reviewer | QUESTION | find_spec-based mediapipe check missed broken installs (regression vs import check)
+2026-10-12 | F03 | reviewer | MINOR | ARCHITECTURE.md overstated stage 7 reads and idempotency; missing status subcommand
+2026-10-12 | F04 | reviewer | MINOR | traversal tests didn't cover the real hole (%2e%2e to workspace.parent manifest); passed on old code
+2026-10-12 | F04 | reviewer | MINOR | 300-char filename → 500 leaking absolute path
+2026-10-12 | F04 | reviewer | MINOR | non-IngestError ingest failures left job dirs; metrics and CLI ignored the job-id rule
+2026-10-12 | F05 | reviewer | MAJOR | after switching jobs, old cards stayed clickable and wrote reviews onto the new job's same clip id
+2026-10-12 | F05 | reviewer | MINOR | polling could get stuck on (render error) or off (failed first load); no retry after partial refresh failure
+2026-10-12 | F05 | tester | LOW | upload route async def runs blocking ingest on event loop → all API calls stall ~12 s
+2026-10-12 | F05 | tester | LOW | no phone layout: at 390px clip cards overflow and approve/reject are off-screen
+2026-10-12 | F06 | reviewer | MINOR | selection jumped to first clip when a refresh removed the selected card (next A could hit an unseen clip)
+2026-10-12 | F06 | tester | HIGH | concurrent review POSTs lose updates / 500: unlocked read-modify-write + shared reviews.json.tmp
+2026-10-12 | F06 | tester | MINOR | API accepts trim values like -5 and 99999
+2026-10-12 | F07 | reviewer | MAJOR | IngestError 400 leaked absolute workspace path, job id and raw ffprobe output to the page
+2026-10-12 | F07 | reviewer | MAJOR | Windows: os.replace fails while reviews.json is open in an unlocked reader → 500 + lost review
+2026-10-12 | F07 | reviewer | MINOR | catch-all 500 handler returned str(exc); upload XHR had no timeout
+2026-10-12 | F07 | lead | MINOR | browser test waited 30 s for a 90 s ingest that takes 27-40 s under load (timing, not regression)
+2026-10-12 | F21 | lead | HIGH | Windows: index.html read as cp1252 → GET / 500 (Diego's localhost crash); ~20 text I/O calls without encoding
+2026-10-12 | F21 | reviewer | MAJOR | subprocess text=True decodes ffprobe/ffmpeg metadata as cp1252 on Windows; AST guard missed subprocess/tempfile
+2026-10-12 | F21 | lead | MAJOR | ffmpeg filter paths C:/... break ass= and sendcmd= on Windows (drive-letter colon)
+2026-10-12 | F21 | ci | MAJOR | ffmpeg 8 removed -vsync → ingest fails on every video with current ffmpeg (Windows CI)
+2026-10-12 | F22 | reviewer | MINOR | CI downloaded unpinned ffmpeg 'latest'; Windows pwsh pipeline could set non-zero exit code
+2026-10-12 | F22 | ci | MINOR | compat tests used a git-ignored fixture video (missing in CI); Windows CRLF checkout broke byte comparisons
