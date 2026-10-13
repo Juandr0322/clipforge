@@ -264,3 +264,31 @@ def test_whisper_unrelated_error_propagates(monkeypatch, tiny_wav, capsys, exc):
         t.transcribe(tiny_wav)
     assert created == ["auto"]
     assert capsys.readouterr().err == ""
+
+
+def test_whisper_model_cannot_be_loaded_is_not_a_cuda_error(
+        monkeypatch, tiny_wav):
+    def behaviour(device, stage):
+        if stage == "call":
+            raise RuntimeError("model file cannot be loaded")
+    t, created = _make(monkeypatch, behaviour)
+    with pytest.raises(RuntimeError, match="cannot be loaded"):
+        t.transcribe(tiny_wav)
+    assert created == ["auto"]
+
+
+def test_whisper_construction_unrelated_error_propagates(monkeypatch, capsys):
+    from clipforge.transcribe.backends import FasterWhisperTranscriber
+    created = _install_fake_whisper(
+        monkeypatch, lambda d, s: (_ for _ in ()).throw(ValueError("bad"))
+        if s == "init" else None)
+    with pytest.raises(ValueError):
+        FasterWhisperTranscriber()
+    assert created == ["auto"] and capsys.readouterr().err == ""
+
+
+def test_whisper_so_and_dll_names_count_as_cuda_errors():
+    from clipforge.transcribe.backends import is_cuda_library_error
+    assert is_cuda_library_error(RuntimeError("Library libcudnn_ops.so.9 not found"))
+    assert is_cuda_library_error(RuntimeError("cublas64_12.dll is missing"))
+    assert is_cuda_library_error(RuntimeError("libfoo.so.1 cannot be loaded"))

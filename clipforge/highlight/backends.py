@@ -212,8 +212,11 @@ class AnthropicHighlighter(Highlighter):
         where = "raw reply not saved"
         if self.debug_dir is not None:
             name = RAW_REPLY_NAME.format(index=chunk.index)
-            (self.debug_dir / name).write_text(text, encoding="utf-8")
-            where = f"raw reply saved as {name}"
+            try:
+                (self.debug_dir / name).write_text(text, encoding="utf-8")
+                where = f"raw reply saved as {name}"
+            except OSError:
+                where = f"could not save {name}"
         print(f"[highlight] WARNING: chunk {chunk.index} "
               f"({chunk.start:.0f}s-{chunk.end:.0f}s) parsed to 0 clips; "
               f"{where}", file=sys.stderr)

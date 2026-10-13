@@ -30,7 +30,7 @@ class Transcriber(abc.ABC):
 
 
 _CUDA_LIB_ERROR = re.compile(
-    r"cublas|cudnn|Library\b.*\bnot found|cannot be loaded", re.I)
+    r"cublas|cudnn|\blib[\w.+-]*\.so\b|\b[\w.+-]+\.dll\b", re.I)
 
 
 def is_cuda_library_error(exc: BaseException) -> bool:
@@ -74,6 +74,7 @@ class FasterWhisperTranscriber(Transcriber):
         print("[transcribe] CUDA libraries not found, falling back to CPU",
               file=sys.stderr)
         self.device = "cpu"
+        # "auto" picks a CPU-valid type; a GPU-only one (float16) would fail here
         self._model = self._model_cls(self.model_size, device="cpu",
                                       compute_type="auto")
 

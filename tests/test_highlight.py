@@ -339,3 +339,53 @@ def test_stage_keeps_debug_files_and_clears_stale(transcribed_job, tmp_path):
     highlight_job(job, AnthropicHighlighter(client=FakeClient([GOOD])),
                   force=True)
     assert not list(job.glob(RAW_REPLY_GLOB))
+
+
+def _stage_job(transcribed_job, tmp_path):
+    job = tmp_path / "job"
+    shutil.copytree(transcribed_job, job)
+    return job
+
+
+def test_debug_write_failure_does_not_fail_stage(
+        transcribed_job, tmp_path, monkeypatch, capsys):
+    job = _stage_job(transcribed_job, tmp_path)
+    secret = str(tmp_path)
+
+    real = Path.write_text
+
+    def boom(self, *a, **k):
+        if self.name.startswith("highlight_raw_chunk_"):
+            raise PermissionError(13, "denied", str(self))
+        return real(self, *a, **k)
+    monkeypatch.setattr(Path, "write_text", boom)
+    h =AnthropicHighlighter(client=FakeClient(["garbage"]))
+    m = highlight_job(job, h, force=True)
+    monkeypatch.undo()
+    assert m.stage == Stage.CANDIDATES_READY
+    assert (job / "candidates.json").exists()
+    assert not Manifest.load(job).history[-1].error
+    err = capsys.readouterr().err
+    assert "could not save" in err and secret not in err
+
+
+def test_stale_unlink_failure_does_not_fail_stage(
+        transcribed_job, tmp_path, monkeypatch, capsys):
+    job = _stage_job(transcribed_job, tmp_path)
+    (job / "highlight_raw_chunk_000.txt").write_text("old", encoding="utf-8")
+
+    real = Path.unlink
+
+    def boom(self, *a, **k):
+        if self.name.startswith("highlight_raw_chunk_"):
+            raise PermissionError(13, "denied", str(self))
+        return real(self, *a, **k)
+    monkeypatch.setattr(Path, "unlink", boom)
+    m = highlight_job(job, MockHighlighter(), force=True)
+    monkeypatch.undo()
+    assert m.stage == Stage.CANDIDATES_READY
+    assert (job / "candidates.json").exists()
+    assert not Manifest.load(job).history[-1].error
+    err = capsys.readouterr().err
+    assert "could not remove highlight_raw_chunk_000.txt" in err
+    assert str(tmp_path) not in err

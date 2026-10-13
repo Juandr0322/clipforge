@@ -6,6 +6,7 @@ writes candidates.json, advances manifest to CANDIDATES_READY.
 """
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -35,7 +36,11 @@ def highlight_job(job_dir: str | Path, highlighter: Highlighter,
         t = Transcript.load(job_dir / m.transcript_path)
         # raw replies from a previous (forced) run would be misleading
         for stale in job_dir.glob(RAW_REPLY_GLOB):
-            stale.unlink()
+            try:
+                stale.unlink()
+            except OSError:  # debug files must never fail the stage
+                print(f"[highlight] WARNING: could not remove {stale.name}",
+                      file=sys.stderr)
         highlighter.debug_dir = job_dir
         cset = highlighter.find_highlights(
             t, min_score=min_score, max_candidates=max_candidates)
