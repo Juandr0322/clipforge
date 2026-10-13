@@ -24,3 +24,9 @@
 2026-10-12 | F21 | ci | MAJOR | ffmpeg 8 removed -vsync → ingest fails on every video with current ffmpeg (Windows CI)
 2026-10-12 | F22 | reviewer | MINOR | CI downloaded unpinned ffmpeg 'latest'; Windows pwsh pipeline could set non-zero exit code
 2026-10-12 | F22 | ci | MINOR | compat tests used a git-ignored fixture video (missing in CI); Windows CRLF checkout broke byte comparisons
+2026-10-13 | F23 | reviewer | MAJOR | .env.example edit not committed in builder worktree (sandbox masks .env.*); ANTHROPIC_WORKSPACE_ID undocumented until Diego added it by hand
+2026-10-13 | F23 | reviewer | MINOR | debug-file unlink/write inside stage try block: an OSError would fail the stage and store a path in manifest error (shown on page)
+2026-10-13 | F23 | reviewer | MINOR | CUDA-fallback regex matched bare "cannot be loaded" (non-CUDA errors triggered a misleading CPU retry)
+2026-10-13 | F23 | reviewer | MINOR | CPU fallback ignored caller's compute_type with no comment explaining why "auto"
+2026-10-13 | F23 | reviewer | QUESTION | no test that an unrelated error at model construction propagates
+2026-10-13 | F23 | reviewer | MINOR | round 2: .so/.dll match broader than CUDA; explicit device=cuda also falls back; av pin comment vague (left open)

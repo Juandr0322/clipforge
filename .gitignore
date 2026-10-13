@@ -43,3 +43,16 @@ Thumbs.db
 
 # Claude Code worktrees (one per parallel builder)
 .claude/worktrees/
+
+# Sandbox placeholders: the Claude Code sandbox mounts empty character devices over these paths
+/.bash_profile
+/.bashrc
+/.gitconfig
+/.gitmodules
+/.mcp.json
+/.profile
+/.ripgreprc
+/.zprofile
+/.zshrc
+/.idea/
+/.vscode/
