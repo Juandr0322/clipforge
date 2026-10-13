@@ -212,6 +212,34 @@
       "notes": "Found by the new windows-latest CI job (F21): choco installs ffmpeg 8 (libavutil 61) which rejects '-vsync' (clipforge/ingest/ingest.py:178), so ingest fails on every video. Diego's 'winget install Gyan.FFmpeg' also installs the latest ffmpeg, so this hits him too. Lead downloaded a current build for local testing: /tmp/claude-0/-home-claude-clipforge/2f6ac4fe-19f9-56d1-9b85-1edd19c12068/scratchpad/ff8/ffmpeg-master-latest-linux64-gpl/bin (ffmpeg N-127388, 2026-10-12)."
     },
     {
+      "id": "F23",
+      "title": "Port the useful parts of PR #2 onto main: av pin, Whisper CPU fallback that keeps the GPU, workspace header, temperature 0, raw-reply debug files",
+      "priority": 0,
+      "area": [
+        "requirements.txt",
+        ".env.example",
+        "clipforge/transcribe/backends.py",
+        "clipforge/highlight/backends.py",
+        "clipforge/highlight/run.py",
+        "tests/test_highlight.py",
+        "tests/test_transcribe.py",
+        "tests/test_settings.py"
+      ],
+      "depends_on": [
+        "F22"
+      ],
+      "acceptance": [
+        "requirements.txt pins PyAV below 19 (a line matching av<19, with a comment saying it is required by faster-whisper and why it is pinned); a test reads requirements.txt and asserts such a line exists (test in tests/test_transcribe.py)",
+        "Whisper keeps device 'auto' (GPU when available) and falls back to device='cpu' only on a missing-CUDA-library failure (RuntimeError mentioning cublas/cudnn/'Library ... not found'), at model construction OR at the first transcribe call / first iteration of the lazy segments generator; on fallback exactly one short stderr line says it fell back to CPU. Tests in tests/test_transcribe.py with a monkeypatched fake WhisperModel (no model download, no GPU): (a) fake works on auto -> used as is, no retry, no warning; (b) fake raises a CUDA-library error on auto (one case at construction, one at first transcribe/iteration) -> retried on cpu, transcript produced, warning printed; (c) an unrelated error (e.g. ValueError or a RuntimeError without CUDA-library text) propagates and is not retried",
+        "AnthropicHighlighter accepts an optional client=None constructor arg; with ANTHROPIC_WORKSPACE_ID set the anthropic client is built with default_headers {'anthropic-workspace-id': <value>}, unset -> default_headers == {}; the value is never printed or logged. ANTHROPIC_WORKSPACE_ID is documented in .env.example (commented, no real value). Parametrized test in tests/test_highlight.py (ws set/unset) using a fake 'anthropic' module in sys.modules; existing .env.example tests in tests/test_settings.py stay green",
+        "Every highlight API call passes temperature=0; a FakeClient that records kwargs asserts temperature == 0 (test in tests/test_highlight.py)",
+        "When a chunk's reply parses to 0 clips: if the highlighter has a debug_dir, the raw reply is saved as highlight_raw_chunk_NNN.txt (utf-8) in the job dir and a stderr WARNING names the chunk index, time range and saved file name; with no debug_dir it only warns ('raw reply not saved'); a good reply saves nothing and prints nothing. Running the highlight stage via highlight_job saves the file in the job dir, a no-op rerun of the finished stage leaves it in place, and a later forced run with a good reply deletes stale highlight_raw_chunk_*.txt; stage output verification and manifest.json are unaffected by the debug files; the warning never appears in any HTTP error detail. Tests in tests/test_highlight.py (include a non-ASCII reply that round-trips byte-for-byte)",
+        "The full suite (python -m pytest tests/ -q) and python -m pyflakes clipforge tests are green; each new regression test was confirmed to fail against main's version of the file it covers (git show main:<path> or git stash) before the fix, and the builder reports which ones it checked"
+      ],
+      "passes": false,
+      "notes": "Source: open PR #2 (branch step-0-windows-fixes-highlight-debug, commits a07aa97 and da57cf4) conflicts with main. The PR is a SOURCE TO READ ONLY: never merge it, never cherry-pick it, never push, never comment on/close/touch PR #2 on GitHub. Re-apply the changes by hand on a fresh local branch from main. Read the PR diff with: git diff main...origin/step-0-windows-fixes-highlight-debug. DO NOT copy the PR's Whisper change: it switched FasterWhisperTranscriber's default device from 'auto' to 'cpu' in clipforge/transcribe/backends.py, which throws away the GPU; keep 'auto' and add a targeted fallback instead (faster-whisper loads CUDA libs lazily, so the error may only appear when the segments generator is first iterated; make sure the retry re-runs transcription from the start on cpu and does not emit duplicate segments). PR implementation shape worth keeping: RAW_REPLY_NAME / RAW_REPLY_GLOB constants in clipforge/highlight/backends.py, a 'debug_dir: Path | None = None' attribute on the Highlighter base class, set by highlight_job in clipforge/highlight/run.py, which deletes stale highlight_raw_chunk_*.txt only before a run that actually executes (forced or not yet done), never on a no-op rerun. Debug warnings are CLI/server-side stderr logging only (LESSONS.md: no paths or job ids in HTTP error details). ANTHROPIC_WORKSPACE_ID is not CLIPFORGE_-prefixed, so the F01 .env.example check does not require it; document it anyway and never print its value. Tests must never call the real Claude API or download models. SKIP (already on main via F21/F22/F02; do not re-add): encoding='utf-8' on read_text/write_text and load_examples, CLI stdout/stderr UTF-8 reconfigure, ffmpeg filter-path escaping, -fps_mode replacing -vsync, test_render fixture changes, and the CLAUDE.md note about the flaky render test. Do not edit any existing test just to make it pass. tests/test_transcribe.py exists and is the home for the transcribe tests (create tests/test_transcribe_fallback.py only if it truly doesn't fit); touch tests/test_settings.py only if needed for the .env.example check."
+    },
+    {
       "id": "F08",
       "title": "Platform profiles: one settings file per platform, read by later steps",
       "priority": 7,
