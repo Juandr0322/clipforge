@@ -54,5 +54,5 @@ Thumbs.db
 /.ripgreprc
 /.zprofile
 /.zshrc
-/.idea/
-/.vscode/
+/.idea
+/.vscode
