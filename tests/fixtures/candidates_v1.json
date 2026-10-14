@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "engine": "mock",
+  "source_duration_sec": 120.0,
+  "candidates": [
+    {"id": 0, "start": 10.0, "end": 40.0, "score": 80,
+     "hook": "Nobody tells you this", "reason": "v1 entry", "type": "insight"}
+  ]
+}

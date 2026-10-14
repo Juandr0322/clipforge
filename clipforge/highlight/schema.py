@@ -9,13 +9,38 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, model_serializer, model_validator
 
 MIN_CLIP_SEC = 15.0
 MAX_CLIP_SEC = 90.0
 
 ClipType = Literal["opinion", "story", "insight", "howto", "funny",
                    "emotional", "other"]
+
+HookType = Literal["bold_claim", "question", "story_open", "contrarian",
+                   "number", "reveal", "emotion", "other"]
+HOOK_TYPES = frozenset(HookType.__args__)
+
+
+class StrangerCheck(BaseModel):
+    """Would a viewer who knows nothing else about the video get this clip?
+    Serialized as {"pass": bool, "reason": str} ("pass" is a Python keyword)."""
+    passed: bool
+    reason: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _from_pass(cls, v):
+        if isinstance(v, dict) and "pass" in v and "passed" not in v:
+            v = {**v, "passed": v["pass"]}
+            del v["pass"]
+        return v
+
+    @model_serializer(mode="wrap")
+    def _to_pass(self, handler):
+        d = handler(self)
+        d["pass"] = d.pop("passed")
+        return d
 
 
 class ClipCandidate(BaseModel):
@@ -26,6 +51,13 @@ class ClipCandidate(BaseModel):
     hook: str                            # first-3-seconds hook line
     reason: str                          # why the model picked it
     type: ClipType = "other"
+    # v2, all optional. Absolute seconds, trigger <= peak <= payoff in [start, end].
+    trigger_t: float | None = None
+    reaction_peak_t: float | None = None
+    payoff_end_t: float | None = None
+    context_setup: str | None = None     # one line of needed background
+    hook_type: HookType | None = None
+    stranger_check: StrangerCheck | None = None
 
     @model_validator(mode="after")
     def _valid(self):
@@ -45,11 +77,20 @@ class ClipCandidate(BaseModel):
         return inter / min(self.duration, other.duration)
 
 
+class RejectedCandidate(BaseModel):
+    """A moment the model found but failed its own stranger check."""
+    start: float
+    end: float
+    hook: str = ""
+    reason: str
+
+
 class CandidateSet(BaseModel):
-    schema_version: int = 1
+    schema_version: int = 2
     engine: str                          # e.g. "anthropic/claude-sonnet-4-6"
     source_duration_sec: float
     candidates: list[ClipCandidate] = Field(default_factory=list)
+    rejected: list[RejectedCandidate] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _invariants(self):
@@ -65,7 +106,8 @@ class CandidateSet(BaseModel):
 
     def save(self, path: Path) -> None:
         tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(self.model_dump_json(indent=2), encoding="utf-8")
+        tmp.write_text(self.model_dump_json(indent=2), encoding="utf-8",
+                       newline="\n")
         tmp.replace(path)
 
     @classmethod
