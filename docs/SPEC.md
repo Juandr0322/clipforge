@@ -67,6 +67,18 @@ The things he cares about are review throughput (clips per minute), clip quality
 11. **Analytics CSV import.** Imports YouTube, TikTok and Instagram analytics exports into the database, matched to clips through post URLs. Connecting to the platform APIs is out of scope because it needs Diego's credentials.
 12. **Weekly ranking and learning.** Ranks clips fairly across platforms and creators. Top performers become positive few-shot examples and flops become negative examples, **but only the ones Diego approves**.
 
+### Group D: v2 roadmap (confirmed by Diego, 2026-10-13)
+The full roadmap, with reasons and sources, is the "ClipForge v2 Roadmap" doc (https://claude.ai/code/artifact/a3f102b2-a1a6-44ad-b68f-502685badf6b). ClipForge grows from "podcast and stream clipper" into an editor for several content types: talk/podcast, gaming, storytime, talking head, cinematic and day-in-the-life. Each phase ends at a gate measured on the benchmark set (F25) before the next starts. Group C features keep their ids and move into these phases.
+
+- **Phase 0, measure first.** F25: a benchmark command that runs a fixed set of Diego's real videos and records clips found, approval rate, minutes, tokens and $ per video. Every later feature must not get worse on the talk video and must get better on its target type.
+- **Phase 1, editor-style workspace (F26–F30).** The review page becomes a three-pane editor (media bin, 9:16 player, inspector) with a waveform timeline. Creators are folders with a brand kit. Jobs can be deleted (to a trash with undo), failed stages retried, captions corrected and one clip re-rendered. Still vanilla JS with no build step; wavesurfer.js (BSD-3) is loaded from a CDN.
+- **Phase 2, recipe engine (F08, F09, F31, F32, F10, F33, F34).** A recipe is one versioned data file per content type that tells every stage how to edit. The new Signals stage (F32) measures loudness, scene cuts (PySceneDetect, BSD-3), motion and faces locally, so highlight picking can find moments with little speech. F34 cuts AI cost: prompt caching, a compact transcript, a cheap first pass, optional batch mode and a usage log.
+- **Phase 3, recipes one at a time (F11–F13, F41–F45).** Talk first, then gaming, storytime, talking head and cinematic. Each recipe ships alone and is checked on the benchmark plus 5–10 real test posts.
+- **Phase 4, multi-file edits (F35–F38, F46).** A job can hold several files; Claude writes an edit plan (`edit_plan.json`) and ffmpeg assembles it. Plans can be reordered on the timeline and exported to editors through OpenTimelineIO (Apache-2.0).
+- **Phase 5, learning loop (F14–F20, F39, F40).** Exports, the clip database and analytics import, plus recipe A/B tracking and a trend log that turns into recipe proposals Diego approves.
+
+Decisions: gaming is the first recipe after talk; the UI stays vanilla JS; Signals is an 8th stage; multi-file editing comes after the gaming recipe; the repo gets an MIT license. Code copied (not just ideas) from MIT/BSD projects keeps its notice in `THIRD_PARTY_NOTICES.md`; GPL/AGPL code is never copied in.
+
 ## 5. Data model sketch
 
 These are additions. Every existing file keeps its shape or gains only optional fields.
@@ -112,6 +124,6 @@ Keep the current look: dark background, monospace, teal accent, the green/red ap
 - Posting to any platform automatically, or scheduling posts.
 - YouTube, Instagram, TikTok, X or Facebook API connections. Analytics arrive only as CSV exports, and auth or OAuth flows are not planned.
 - Multi-user use, auth, cloud hosting, job queues, or exposing the server beyond localhost.
-- Trending audio or music, AI voiceover, stock footage, or face/voice swaps.
+- Trending or licensed music baked into exported files, AI voiceover, stock footage, or face/voice swaps. Trending sounds are added in each platform's app at posting time. A track the creator supplies may be used for beat-matched cuts (Group D).
 - Processing footage Diego doesn't have rights to.
-- Rewriting the 7-stage architecture or the manifest state machine.
+- Rewriting the stage architecture or the manifest state machine. Adding a stage built the same way (JSON in and out, idempotent, verifies its own outputs) is allowed: F32 adds Signals as the 8th stage.

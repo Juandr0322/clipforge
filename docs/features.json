@@ -267,7 +267,7 @@
     {
       "id": "F08",
       "title": "Platform profiles: one settings file per platform, read by later steps",
-      "priority": 7,
+      "priority": 13,
       "area": [
         "clipforge/platforms/**",
         "tests/test_platforms.py"
@@ -285,7 +285,7 @@
     {
       "id": "F09",
       "title": "Per-clip quality report file and a post-render quality pass (foundation for Group C)",
-      "priority": 7,
+      "priority": 13,
       "area": [
         "clipforge/quality/**",
         "clipforge/pipeline.py",
@@ -306,22 +306,24 @@
     },
     {
       "id": "F10",
-      "title": "Smarter highlight picking: trigger/peak/payoff times, context setup, hook type, stranger check",
-      "priority": 8,
+      "title": "Smarter highlight picking: trigger/peak/payoff times, context setup, hook type, stranger check (+ recipe-built prompt and signal peaks)",
+      "priority": 16,
       "area": [
         "clipforge/highlight/**",
         "tests/test_highlight.py",
         "tests/fixtures/candidates_v1.json"
       ],
       "depends_on": [
-        "F03"
+        "F03",
+        "F32"
       ],
       "acceptance": [
         "The highlight system prompt asks for trigger_t, reaction_peak_t, payoff_end_t, context_setup (one line), hook_type (fixed vocabulary) and a stranger check, and says moments that need backstory must be rejected. A test checks each field name appears in the built prompt",
         "parse_llm_response keeps valid new fields. Times that are out of order or outside [start, end] are cleared (the candidate is kept). An unknown hook_type becomes 'other'. A multi-line context_setup is cut to one line (tests with crafted LLM text)",
         "A candidate whose stranger check fails is left out of candidates and listed in CandidateSet.rejected with its reason (test)",
         "A v1 candidates.json fixture without the new fields still loads, and the refine/render tests pass unchanged (test)",
-        "MockHighlighter fills every new field deterministically, so a mock pipeline run gives candidates.json entries with trigger_t <= reaction_peak_t <= payoff_end_t inside each clip (test)"
+        "MockHighlighter fills every new field deterministically, so a mock pipeline run gives candidates.json entries with trigger_t <= reaction_peak_t <= payoff_end_t inside each clip (test)",
+        "The prompt is assembled from the job's recipe and gets a short list of signal peaks from signals.json beside the transcript; a mock gaming fixture with no speech still yields candidates (test)"
       ],
       "passes": false,
       "notes": "Bump CandidateSet.schema_version to 2; all new fields are optional. Tests must never call the real Claude API."
@@ -329,7 +331,7 @@
     {
       "id": "F11",
       "title": "Hook-first trimming and a first-3-seconds hook score",
-      "priority": 9,
+      "priority": 19,
       "area": [
         "clipforge/refine/**",
         "clipforge/quality/hook.py",
@@ -353,7 +355,7 @@
     {
       "id": "F12",
       "title": "Originality layer: context overlay, punch-in zoom on the reaction peak, optional end card, value-add checklist",
-      "priority": 9,
+      "priority": 19,
       "area": [
         "clipforge/render/render.py",
         "clipforge/render/run.py",
@@ -377,7 +379,7 @@
     {
       "id": "F13",
       "title": "Word-chunked captions inside platform safe zones + pacing check (>3 s with no visual change)",
-      "priority": 10,
+      "priority": 20,
       "area": [
         "clipforge/render/captions.py",
         "clipforge/render/run.py",
@@ -402,7 +404,7 @@
     {
       "id": "F14",
       "title": "Hook variants (2-3 openings per clip) and loop-point detection",
-      "priority": 11,
+      "priority": 31,
       "area": [
         "clipforge/variants/**",
         "clipforge/pipeline.py",
@@ -425,7 +427,7 @@
     {
       "id": "F15",
       "title": "Per-platform exports from one master + a text file per clip (title, caption, hashtags, credit)",
-      "priority": 11,
+      "priority": 31,
       "area": [
         "clipforge/export/**",
         "clipforge/cli.py",
@@ -447,7 +449,7 @@
     {
       "id": "F16",
       "title": "Control-panel API: quality data in job detail, per-platform reviews, export, creator name, trend references",
-      "priority": 12,
+      "priority": 32,
       "area": [
         "clipforge/server/app.py",
         "clipforge/review/store.py",
@@ -472,7 +474,7 @@
     {
       "id": "F17",
       "title": "Control-panel UI: hook score, checklist, pacing flags, variants side by side, per-platform approve, export, trend form",
-      "priority": 13,
+      "priority": 33,
       "area": [
         "clipforge/server/static/index.html",
         "tests/test_ui_static.py"
@@ -494,7 +496,7 @@
     {
       "id": "F18",
       "title": "SQLite clip database recording every exported clip and its choices, plus a post-URL field",
-      "priority": 14,
+      "priority": 34,
       "area": [
         "clipforge/db/**",
         "clipforge/export/**",
@@ -518,7 +520,7 @@
     {
       "id": "F19",
       "title": "Import platform analytics CSV exports into the clip database",
-      "priority": 15,
+      "priority": 35,
       "area": [
         "clipforge/analytics/**",
         "clipforge/cli.py",
@@ -541,7 +543,7 @@
     {
       "id": "F20",
       "title": "Weekly ranking that feeds top performers and flops back into the few-shot library, with Diego approving each",
-      "priority": 16,
+      "priority": 36,
       "area": [
         "clipforge/learning/**",
         "clipforge/highlight/backends.py",
@@ -562,6 +564,442 @@
       ],
       "passes": false,
       "notes": "examples/README.txt says more than about 8 examples bloats the prompt. Pick the cap with that in mind and write the rule down."
+    },
+    {
+      "id": "F25",
+      "title": "Benchmark set + `clipforge bench`: run Diego's fixed videos and record clips, approvals, minutes, tokens and $",
+      "priority": 7,
+      "area": [
+        "clipforge/bench.py",
+        "clipforge/cli.py",
+        "clipforge/highlight/backends.py",
+        "clipforge/highlight/run.py",
+        ".env.example",
+        ".gitignore",
+        "tests/test_bench.py",
+        "tests/test_highlight.py"
+      ],
+      "depends_on": [],
+      "acceptance": [
+        "`clipforge bench init` creates the bench folder (default ~/clipforge-bench; --bench-dir or CLIPFORGE_BENCH_DIR override) with a template bench.json and a README.txt, and never overwrites an existing bench.json (test)",
+        "bench.json is validated before anything runs: an unknown content type, a duplicate or unsafe name, or an entry with both or neither of file/files is refused with an error naming the entry (test)",
+        "`clipforge bench run` ingests and runs the full pipeline for every entry into a job named bench-<run_id>-<name>. A missing file, a corrupt file or a stage error is recorded with a status and a short error, and the other entries still run. Multi-file entries are recorded as skipped until F35 (test with mock engines)",
+        "Each run writes runs/<run_id>.json in the bench folder with the git commit, the resolved engines and, per entry: status, source minutes, processing minutes, seconds per stage from the manifest, candidates, rendered clips, highlight token usage and $ cost (test)",
+        "The highlight stage writes highlight_usage.json (model, calls, input/output/cache-write/cache-read tokens) summed over every chunk. MockHighlighter records its calls with zero tokens. Failing to write the file never fails the stage (tests with a fake client whose replies carry usage; field names checked against the real SDK's Usage model)",
+        "Cost comes from a per-model price table (USD per million tokens, dated, with its source URL). An unknown model gives a blank cost, never a guess (test)",
+        "`clipforge bench report` rebuilds results.csv from every run file, adding reviewed/approved/approval rate from each job's reviews.json. Running it twice gives byte-identical output, and it prints the latest run against the previous one per video (test)",
+        "Tests use temp folders only; no video or bench output is ever written inside the repo"
+      ],
+      "passes": false,
+      "notes": "Bench videos and results live in Diego's bench folder, not in git (they may carry client names). The usage log is the first piece of F34."
+    },
+    {
+      "id": "F26",
+      "title": "Split the review page into ES modules (no build step, no visible change)",
+      "priority": 8,
+      "area": [
+        "clipforge/server/static/**",
+        "clipforge/server/app.py",
+        "tests/test_ui_static.py",
+        "tests/test_ui_browser.py"
+      ],
+      "depends_on": [],
+      "acceptance": [
+        "index.html loads a small set of ES-module files served from /static with no bundler; the page behaves exactly as before",
+        "Every existing static and browser test passes; the static-test bans (innerHTML, inline on*, alert/confirm/prompt, setInterval) now scan every module file (test)",
+        "Module files are served with a JavaScript content type on Windows too (test)"
+      ],
+      "passes": false,
+      "notes": "Pure refactor: no feature changes. Keep h()/textContent DOM building."
+    },
+    {
+      "id": "F27",
+      "title": "Creator folders with a brand kit; jobs belong to a creator",
+      "priority": 9,
+      "area": [
+        "clipforge/creators/**",
+        "clipforge/server/**",
+        "clipforge/common/manifest.py",
+        "tests/test_creators.py",
+        "tests/test_server.py"
+      ],
+      "depends_on": [
+        "F26"
+      ],
+      "acceptance": [
+        "workspace/creators.json holds creators: name, handles, platforms, default recipe, brand kit (caption font and colours, end-card text) and an optional facecam rectangle. Written under the per-job-style lock with atomic replace (test)",
+        "The manifest gains an optional creator id; jobs without one show under Unsorted and old manifests still load (test)",
+        "API: create/rename/delete a creator (delete refused while it has jobs), move a job to a creator, upload into a creator; ids validated like job ids (tests)",
+        "The sidebar groups jobs by creator and survives a server restart (browser test)"
+      ],
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "F28",
+      "title": "Delete to trash with undo, purge after 7 days, retry a failed stage, clear rejected renders",
+      "priority": 10,
+      "area": [
+        "clipforge/server/**",
+        "clipforge/review/store.py",
+        "tests/test_server.py",
+        "tests/test_trash.py"
+      ],
+      "depends_on": [
+        "F27"
+      ],
+      "acceptance": [
+        "Deleting a job moves its folder to workspace/.trash/ and an Undo toast restores it; no confirm() dialogs (tests)",
+        "Trash older than 7 days is purged when the server starts (test with patched clock)",
+        "A running job cannot be deleted (409); bad or traversal ids are refused (tests)",
+        "Retry re-runs only the failed stage and later ones (test)",
+        "Clear rejected deletes the video files of rejected clips but keeps their reviews and metrics (test)"
+      ],
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "F29",
+      "title": "Editor layout: media bin, 9:16 player with safe-zone overlay, inspector, waveform timeline with draggable clip regions",
+      "priority": 11,
+      "area": [
+        "clipforge/server/static/**",
+        "clipforge/server/app.py",
+        "tests/test_ui_static.py",
+        "tests/test_ui_browser.py"
+      ],
+      "depends_on": [
+        "F26"
+      ],
+      "acceptance": [
+        "wavesurfer.js (BSD-3) and its Regions plugin load from a CDN listed in the page; no build step",
+        "Each clip is a region on the source waveform; dragging an edge updates the trim, still saved in absolute source seconds (browser test)",
+        "A toggle draws the caption safe zone over the player (main-tier zone from F08 once it exists, a fixed default before)",
+        "Keyboard shortcuts from F06 still work (browser test)"
+      ],
+      "passes": false,
+      "notes": "Planner refines these acceptance criteria against the code as it stands before this feature is built."
+    },
+    {
+      "id": "F30",
+      "title": "Caption corrections in the inspector + re-render a single clip",
+      "priority": 12,
+      "area": [
+        "clipforge/render/**",
+        "clipforge/server/**",
+        "tests/test_render.py",
+        "tests/test_server.py"
+      ],
+      "depends_on": [
+        "F29"
+      ],
+      "acceptance": [
+        "Edited caption words and timings are stored per clip next to the render and override the transcript for that clip only (test)",
+        "Re-render touches only that clip; the old file stays until the new one verifies (test)",
+        "The edited word appears in the clip's ASS file (test)"
+      ],
+      "passes": false,
+      "notes": "Planner refines these acceptance criteria against the code as it stands before this feature is built."
+    },
+    {
+      "id": "F31",
+      "title": "Recipe files: one versioned data file per content type, stored on each job",
+      "priority": 14,
+      "area": [
+        "clipforge/recipes/**",
+        "clipforge/pipeline.py",
+        "tests/test_recipes.py"
+      ],
+      "depends_on": [
+        "F08"
+      ],
+      "acceptance": [
+        "recipes/<name>.json files for talk, gaming, storytime, talking_head, cinematic and day_in_life, each with a version, validated on load with errors naming file and field (test)",
+        "Each job records the recipe name and version it ran with (test)",
+        "Recipe 'talk' reproduces today's behaviour: with mock engines it gives the same candidates and render parameters as before (test)"
+      ],
+      "passes": false,
+      "notes": "Planner refines these acceptance criteria against the code as it stands before this feature is built."
+    },
+    {
+      "id": "F32",
+      "title": "Signals stage (8th stage): loudness, spikes, scene cuts, motion, faces and speech density per second, no AI cost",
+      "priority": 15,
+      "area": [
+        "clipforge/signals/**",
+        "clipforge/common/manifest.py",
+        "clipforge/pipeline.py",
+        "requirements.txt",
+        "tests/test_signals.py"
+      ],
+      "depends_on": [
+        "F31"
+      ],
+      "acceptance": [
+        "New stage after transcribe writes signals.json; idempotent and verifies its own outputs like every other stage (test)",
+        "On a synthetic video a planted loud beep and a planted scene cut are found within 0.5 s (test)",
+        "Old jobs without signals still render; the manifest state machine stays backward compatible (test)"
+      ],
+      "passes": false,
+      "notes": "Planner refines these acceptance criteria against the code as it stands before this feature is built."
+    },
+    {
+      "id": "F33",
+      "title": "Content-type suggestion at upload from one cheap model call",
+      "priority": 17,
+      "area": [
+        "clipforge/recipes/**",
+        "clipforge/server/**",
+        "tests/test_recipes.py"
+      ],
+      "depends_on": [
+        "F31",
+        "F32"
+      ],
+      "acceptance": [
+        "One call on a transcript sample plus the signal summary suggests a recipe; mock engine in tests",
+        "The creator's default recipe is never overridden silently; the suggestion is shown for Diego to accept"
+      ],
+      "passes": false,
+      "notes": "Planner refines these acceptance criteria against the code as it stands before this feature is built."
+    },
+    {
+      "id": "F34",
+      "title": "Token savings: prompt caching, compact transcript, cheap first pass, batch mode, usage shown per job",
+      "priority": 18,
+      "area": [
+        "clipforge/highlight/**",
+        "clipforge/server/**",
+        "tests/test_highlight.py"
+      ],
+      "depends_on": [
+        "F10",
+        "F25"
+      ],
+      "acceptance": [
+        "The system prompt and few-shot block are sent with cache_control; the cache fields are recorded in highlight_usage.json (test with fake client checked against the real SDK signature)",
+        "Transcript lines sent to the model are compacted without changing captions (test)",
+        "Each change is kept only if the benchmark shows lower $ per video with no drop in approval rate"
+      ],
+      "passes": false,
+      "notes": "Planner refines these acceptance criteria against the code as it stands before this feature is built."
+    },
+    {
+      "id": "F41",
+      "title": "Recipe 3a: talk/podcast tuned (hook-first, originality layer, animated word captions)",
+      "priority": 21,
+      "area": [
+        "recipes/**",
+        "clipforge/render/**",
+        "clipforge/highlight/**"
+      ],
+      "depends_on": [
+        "F11",
+        "F12",
+        "F13",
+        "F31"
+      ],
+      "acceptance": [
+        "Benchmark talk video: approval rate not lower than before, and Diego's 5–10 test posts reviewed"
+      ],
+      "passes": false,
+      "notes": "Planner refines these acceptance criteria against the code as it stands before this feature is built."
+    },
+    {
+      "id": "F42",
+      "title": "Recipe 3b: gaming (signal-led picking, facecam-over-gameplay layout, action zoom)",
+      "priority": 22,
+      "area": [
+        "recipes/**",
+        "clipforge/reframe/**",
+        "clipforge/render/**"
+      ],
+      "depends_on": [
+        "F41",
+        "F32",
+        "F27"
+      ],
+      "acceptance": [
+        "Gaming benchmark video yields clips from moments with little speech; stacked layout uses the creator's saved facecam rectangle"
+      ],
+      "passes": false,
+      "notes": "Planner refines these acceptance criteria against the code as it stands before this feature is built."
+    },
+    {
+      "id": "F43",
+      "title": "Recipe 3c: storytime (hook, context, tension, payoff; Part 1/2 splitting)",
+      "priority": 23,
+      "area": [
+        "recipes/**",
+        "clipforge/highlight/**"
+      ],
+      "depends_on": [
+        "F41"
+      ],
+      "acceptance": [
+        "Storytime benchmark beats the talk recipe on the same video"
+      ],
+      "passes": false,
+      "notes": "Planner refines these acceptance criteria against the code as it stands before this feature is built."
+    },
+    {
+      "id": "F44",
+      "title": "Recipe 3d: talking head (sentence jump cuts, alternating punch-in)",
+      "priority": 24,
+      "area": [
+        "recipes/**",
+        "clipforge/render/**"
+      ],
+      "depends_on": [
+        "F41"
+      ],
+      "acceptance": [
+        "Talking-head benchmark beats the talk recipe on the same video"
+      ],
+      "passes": false,
+      "notes": "Planner refines these acceptance criteria against the code as it stands before this feature is built."
+    },
+    {
+      "id": "F45",
+      "title": "Recipe 3e: cinematic (visual-led picking, colour look, grain, speed ramps, optional creator track beats)",
+      "priority": 25,
+      "area": [
+        "recipes/**",
+        "clipforge/render/**"
+      ],
+      "depends_on": [
+        "F41",
+        "F32"
+      ],
+      "acceptance": [
+        "Cinematic benchmark produces clips with no speech required"
+      ],
+      "passes": false,
+      "notes": "Planner refines these acceptance criteria against the code as it stands before this feature is built."
+    },
+    {
+      "id": "F35",
+      "title": "Multi-file job: several files in one job, each normalized, transcribed and measured",
+      "priority": 26,
+      "area": [
+        "clipforge/ingest/**",
+        "clipforge/server/**",
+        "clipforge/common/manifest.py"
+      ],
+      "depends_on": [
+        "F32"
+      ],
+      "acceptance": [
+        "A 5-file job reaches the planning step; one bad file fails alone (test)"
+      ],
+      "passes": false,
+      "notes": "Planner refines these acceptance criteria against the code as it stands before this feature is built."
+    },
+    {
+      "id": "F36",
+      "title": "Edit plan: Claude writes edit_plan.json (shots, order, in/out, on-screen text), parsed defensively",
+      "priority": 27,
+      "area": [
+        "clipforge/assemble/**"
+      ],
+      "depends_on": [
+        "F35"
+      ],
+      "acceptance": [
+        "Bad plans are repaired or rejected, never crash the stage (tests with crafted replies)"
+      ],
+      "passes": false,
+      "notes": "Planner refines these acceptance criteria against the code as it stands before this feature is built."
+    },
+    {
+      "id": "F37",
+      "title": "Assemble render: concat/crossfade, captions across joins, loudness -14 LUFS",
+      "priority": 28,
+      "area": [
+        "clipforge/assemble/**",
+        "clipforge/render/**"
+      ],
+      "depends_on": [
+        "F36"
+      ],
+      "acceptance": [
+        "Rendered length matches the plan within 0.1 s; captions stay in sync across joins (test)"
+      ],
+      "passes": false,
+      "notes": "Planner refines these acceptance criteria against the code as it stands before this feature is built."
+    },
+    {
+      "id": "F38",
+      "title": "Edit the plan on the timeline + OpenTimelineIO export",
+      "priority": 29,
+      "area": [
+        "clipforge/server/**",
+        "clipforge/assemble/**"
+      ],
+      "depends_on": [
+        "F37",
+        "F29"
+      ],
+      "acceptance": [
+        "Reorder shots in the browser, re-render, new order confirmed (browser test)"
+      ],
+      "passes": false,
+      "notes": "Planner refines these acceptance criteria against the code as it stands before this feature is built."
+    },
+    {
+      "id": "F46",
+      "title": "Recipe 3f: day in the life (multi-file, time stamps, ambient sound)",
+      "priority": 30,
+      "area": [
+        "recipes/**",
+        "clipforge/assemble/**"
+      ],
+      "depends_on": [
+        "F37",
+        "F41"
+      ],
+      "acceptance": [
+        "Day-in-the-life benchmark set renders one video from its clips"
+      ],
+      "passes": false,
+      "notes": "Planner refines these acceptance criteria against the code as it stands before this feature is built."
+    },
+    {
+      "id": "F39",
+      "title": "Recipe A/B tracking: compare recipe versions per content type and creator",
+      "priority": 37,
+      "area": [
+        "clipforge/db/**",
+        "clipforge/server/**"
+      ],
+      "depends_on": [
+        "F20",
+        "F31"
+      ],
+      "acceptance": [
+        "Every exported clip records recipe, version and variant; the weekly ranking shows versions side by side with clip counts and followers per 1,000 views"
+      ],
+      "passes": false,
+      "notes": "Planner refines these acceptance criteria against the code as it stands before this feature is built."
+    },
+    {
+      "id": "F40",
+      "title": "Trend log -> weekly recipe proposals Diego approves",
+      "priority": 38,
+      "area": [
+        "clipforge/db/**",
+        "clipforge/recipes/**",
+        "clipforge/server/**"
+      ],
+      "depends_on": [
+        "F39",
+        "F17"
+      ],
+      "acceptance": [
+        "A proposal shows as a readable diff; nothing changes without Diego's approval; mock engine in tests"
+      ],
+      "passes": false,
+      "notes": "Planner refines these acceptance criteria against the code as it stands before this feature is built."
     }
   ]
 }
