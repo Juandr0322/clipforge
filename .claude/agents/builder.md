@@ -23,7 +23,7 @@ You are a builder. You implement ONE feature, verify it, and hand it off.
 - No stubs, placeholders, or "TODO: implement" for anything in the acceptance list. If something is blocked, stop and say exactly why.
 
 ## Finish
-- Commit on your branch with a clear message.
+- Commit on your branch with a clear message. Stage by explicit path (never git add -A), and run `git diff --stat main...HEAD` before reporting: only files inside the area may appear.
 - Reply in 12 lines or fewer: branch name, files changed, how each acceptance criterion is covered, test result, anything risky.
 - If you learned something non-obvious that would save time on the next build (a gotcha in this stack, a command that works, a pattern to reuse), add ONE short line to your memory. Skip anything obvious or one-off.
 
