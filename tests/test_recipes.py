@@ -15,7 +15,9 @@ from clipforge.ingest.ingest import ingest
 from clipforge.pipeline import PipelineConfig, run_pipeline
 from clipforge.quality.report import load_report
 from clipforge.recipes import (RECIPES_DIR, RecipeError, load_all, load_recipe,
-                               load_recipe_file, read_record, recipe_names)
+                               load_recipe_file, read_record, recipe_names,
+                               recipe_problem)
+from clipforge.pipeline import RECIPE_FAILED
 
 NAMES = {"talk", "gaming", "storytime", "talking_head", "cinematic",
          "day_in_life"}
@@ -179,6 +181,26 @@ def test_recipe_values_feed_the_settings_and_env_wins(tmp_path, monkeypatch):
     assert r.audio_config().music_level_db == MUSIC_MAX_DB
 
 
+@pytest.mark.parametrize("env, junk", [
+    ("CLIPFORGE_MUSIC_LEVEL_DB", ""), ("CLIPFORGE_MUSIC_LEVEL_DB", "loud"),
+    ("CLIPFORGE_SFX_LEVEL_DB", "nan"), ("CLIPFORGE_MUSIC_DUCK_DB", " "),
+])
+def test_empty_or_junk_env_keeps_the_recipe_value(monkeypatch, env, junk):
+    monkeypatch.setenv(env, junk)
+    cfg = load_recipe("gaming").audio_config()
+    assert (cfg.sfx_level_db, cfg.music_level_db, cfg.music_duck_db) == (
+        -6.0, -20.0, -6.0)
+
+
+def test_junk_flag_and_empty_tags_keep_the_recipe_value(tmp_path, monkeypatch):
+    r = load_recipe_file(_write(tmp_path, _base(
+        audio={"sfx": False, "music_tags": ["chill"]})))
+    monkeypatch.setenv("CLIPFORGE_SFX", "maybe")
+    monkeypatch.setenv("CLIPFORGE_MUSIC_TAGS", " , ")
+    cfg = r.audio_config()
+    assert cfg.sfx is False and cfg.music_tags == ["chill"]
+
+
 def test_recipe_without_audio_leaves_render_on_env_settings():
     assert load_recipe("talk").audio_config() is None
 
@@ -234,21 +256,137 @@ def test_job_records_recipe_name_and_version(jobs):
                                       "version": load_recipe("gaming").version}
 
 
-def test_recorded_recipe_sticks_on_rerun(jobs):
+def test_recorded_recipe_sticks_on_rerun(tmp_path):
+    from clipforge.pipeline import _job_recipe
+    job = _make_job(tmp_path, "k")
     out = []
-    run_pipeline(jobs["t"], PipelineConfig(recipe="gaming", **MOCK),
-                 progress=out.append)
-    assert read_record(jobs["t"])["name"] == "talk"
+    m = Manifest.load(job)
+    _job_recipe(job, m, PipelineConfig(**MOCK), out.append)
+    r = _job_recipe(job, m, PipelineConfig(recipe="gaming", **MOCK), out.append)
+    assert r.name == "talk"
+    assert read_record(job)["name"] == "talk"
     assert any("already uses recipe talk" in s for s in out)
 
 
-def test_unknown_recipe_fails_before_touching_the_job(tmp_path):
-    job = _make_job(tmp_path, "u")
+def test_unknown_recipe_marks_the_job_failed_with_a_fixed_sentence(tmp_path):
+    # Corrected: the first version of this test expected the job to stay
+    # untouched, which left it looking stuck at "ingested" with no reason.
+    job = _make_job(tmp_path, "job9")
     with pytest.raises(RecipeError):
         run_pipeline(job, PipelineConfig(recipe="nope", **MOCK),
                      progress=lambda s: None)
     assert read_record(job) is None
-    assert Manifest.load(job).stage.value == "ingested"
+    m = Manifest.load(job)
+    assert m.is_failed and m.stage.value == "ingested"
+    assert m.error == RECIPE_FAILED
+    assert "nope" not in m.error and "/" not in m.error and "\\" not in m.error
+    assert m.job_id not in m.error and str(tmp_path) not in m.error
+    assert m.history[-1].error == RECIPE_FAILED and not m.history[-1].ok
+
+
+def test_server_shows_a_recipe_failure_without_paths(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from clipforge.server.app import create_app
+    job = _make_job(tmp_path, "s1")
+    monkeypatch.setenv("CLIPFORGE_RECIPE", "nope")
+    app = create_app(tmp_path, config=PipelineConfig(**MOCK),
+                     sync_pipeline=True)
+    c = TestClient(app, raise_server_exceptions=False)
+    assert c.post("/api/jobs/s1/rerun").status_code == 200
+    d = c.get("/api/jobs/s1").json()
+    assert d["failed"] and d["error"] == RECIPE_FAILED
+    for bad in ("/", "\\", str(tmp_path), "s1", "nope", ".json"):
+        assert bad not in d["error"]
+    listed = [j for j in c.get("/api/jobs").json() if j["job_id"] == "s1"][0]
+    assert listed["failed"] and listed["error"] == RECIPE_FAILED
+    assert job.is_dir()
+
+
+def test_recipe_problem_checks_the_env_var(monkeypatch):
+    assert recipe_problem() is None
+    monkeypatch.setenv("CLIPFORGE_RECIPE", "gaming")
+    assert recipe_problem() is None
+    monkeypatch.setenv("CLIPFORGE_RECIPE", "nope")
+    assert "Unknown recipe 'nope'" in recipe_problem()
+
+
+def test_cli_pipeline_exits_with_a_short_message(tmp_path, monkeypatch, capsys):
+    from clipforge import cli
+    monkeypatch.setenv("CLIPFORGE_RECIPE", "nope")
+    monkeypatch.setattr(cli, "ffmpeg_problem", lambda: None)
+    monkeypatch.setattr(cli, "report_ffmpeg", lambda: None)
+    monkeypatch.setattr("sys.argv", ["clipforge", "pipeline", "j1",
+                                     "--workspace", str(tmp_path)])
+    rc = cli.main()
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "PIPELINE FAILED" in err and "Traceback" not in err
+
+
+def _recipes_copy(tmp_path, monkeypatch, version):
+    import shutil
+    import clipforge.recipes as R
+    d = tmp_path / "recipes"
+    shutil.copytree(RECIPES_DIR, d)
+    p = d / "talk.json"
+    data = json.loads(p.read_text(encoding="utf-8"))
+    data["version"] = version
+    p.write_text(json.dumps(data), encoding="utf-8", newline="\n")
+    monkeypatch.setattr(R, "RECIPES_DIR", d)
+
+
+def test_recorded_version_is_updated_when_the_recipe_changes(tmp_path, monkeypatch):
+    from clipforge.pipeline import _job_recipe
+    job = _make_job(tmp_path, "v")
+    msgs = []
+    _recipes_copy(tmp_path, monkeypatch, 1)
+    m = Manifest.load(job)
+    _job_recipe(job, m, PipelineConfig(**MOCK), msgs.append)
+    assert read_record(job) == {"name": "talk", "version": 1}
+    _recipes_copy_over = tmp_path / "recipes" / "talk.json"
+    data = json.loads(_recipes_copy_over.read_text(encoding="utf-8"))
+    data["version"] = 2
+    _recipes_copy_over.write_text(json.dumps(data), encoding="utf-8")
+    r = _job_recipe(job, m, PipelineConfig(**MOCK), msgs.append)
+    assert r.version == 2 and read_record(job)["version"] == 2
+    assert any("version 1 to 2" in s for s in msgs)
+
+
+def test_finished_job_without_a_record_is_not_given_one(jobs, tmp_path, monkeypatch):
+    import shutil
+    legacy = tmp_path / "legacy"
+    shutil.copytree(jobs["t"], legacy)
+    (legacy / "recipe.json").unlink()
+    monkeypatch.setenv("CLIPFORGE_RECIPE", "nope")   # would fail a real run
+    m = run_pipeline(legacy, PipelineConfig(**MOCK), progress=lambda s: None)
+    assert m.stage.value == "rendered" and not m.is_failed
+    assert read_record(legacy) is None
+
+
+def test_finished_job_survives_a_broken_recipe_file(jobs, tmp_path, monkeypatch):
+    import shutil
+    import clipforge.recipes as R
+    done = tmp_path / "done"
+    shutil.copytree(jobs["t"], done)
+    bad = tmp_path / "badrecipes"
+    bad.mkdir()
+    (bad / "talk.json").write_text("{broken", encoding="utf-8")
+    monkeypatch.setattr(R, "RECIPES_DIR", bad)
+    m = run_pipeline(done, PipelineConfig(**MOCK), progress=lambda s: None)
+    assert not m.is_failed
+
+
+def test_write_record_uses_unique_temp_and_retrying_replace(tmp_path, monkeypatch):
+    import clipforge.recipes as R
+    seen = []
+    real = R._replace_with_retry
+    monkeypatch.setattr(R, "_replace_with_retry",
+                        lambda t, d: (seen.append(t.name), real(t, d)))
+    R.write_record(tmp_path, load_recipe("talk"))
+    R.write_record(tmp_path, load_recipe("talk"))
+    assert len(seen) == 2 and seen[0] != seen[1]
+    assert read_record(tmp_path)["name"] == "talk"
+    assert not list(tmp_path.glob("*.tmp"))
 
 
 def test_talk_reproduces_the_old_candidates(jobs):

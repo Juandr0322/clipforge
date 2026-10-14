@@ -9,14 +9,18 @@ from __future__ import annotations
 import json
 import math
 import os
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from clipforge.audio.layer import MUSIC_MAX_DB, SFX_MAX_DB, AudioLayerConfig
+from clipforge.audio.layer import (MUSIC_MAX_DB, SFX_MAX_DB, AudioLayerConfig,
+                                   _FALSE, _TRUE)
+from clipforge.review.store import _replace_with_retry
 
 RECIPES_DIR = Path(__file__).parent / "files"
 RECORD_NAME = "recipe.json"
 DEFAULT_RECIPE = "talk"
+_FLAG_WORDS = _TRUE | _FALSE
 # (key, env var, lower bound, upper bound) for the dB settings
 _DB = (("sfx_level_db", "CLIPFORGE_SFX_LEVEL_DB", -40.0, SFX_MAX_DB),
        ("music_level_db", "CLIPFORGE_MUSIC_LEVEL_DB", -40.0, MUSIC_MAX_DB),
@@ -47,16 +51,40 @@ class Recipe:
             return None
         cfg = AudioLayerConfig.from_env()
         a = self.audio
-        if "sfx" in a and "CLIPFORGE_SFX" not in os.environ:
+        if "sfx" in a and not _flag_set("CLIPFORGE_SFX"):
             cfg.sfx = a["sfx"]
-        if "music" in a and "CLIPFORGE_MUSIC" not in os.environ:
+        if "music" in a and not _flag_set("CLIPFORGE_MUSIC"):
             cfg.music = a["music"]
-        if "music_tags" in a and "CLIPFORGE_MUSIC_TAGS" not in os.environ:
+        if "music_tags" in a and not any(
+                t.strip() for t in os.environ.get("CLIPFORGE_MUSIC_TAGS", "").split(",")):
             cfg.music_tags = list(a["music_tags"])
         for key, env, _lo, _hi in _DB:
-            if key in a and env not in os.environ:
+            if key in a and not _db_set(env):
                 setattr(cfg, key, a[key])
         return cfg
+
+
+def _flag_set(name: str) -> bool:
+    """True when the env var holds a value AudioLayerConfig.from_env understands."""
+    raw = os.environ.get(name)
+    return raw is not None and raw.strip().lower() in _FLAG_WORDS
+
+
+def _db_set(name: str) -> bool:
+    try:
+        return math.isfinite(float(os.environ.get(name, "")))
+    except ValueError:
+        return False
+
+
+def recipe_problem() -> str | None:
+    """Why CLIPFORGE_RECIPE cannot be used (unknown name or broken file), else None."""
+    name = os.environ.get("CLIPFORGE_RECIPE") or DEFAULT_RECIPE
+    try:
+        load_recipe(name)
+    except RecipeError as exc:
+        return str(exc)
+    return None
 
 
 def _fail(path: Path, field: str, msg: str):
@@ -182,8 +210,12 @@ def read_record(job_dir: Path) -> dict | None:
 
 def write_record(job_dir: Path, recipe: Recipe) -> None:
     path = Path(job_dir) / RECORD_NAME
-    tmp = path.with_suffix(".json.tmp")
-    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
-        json.dump({"name": recipe.name, "version": recipe.version}, f, indent=2)
-        f.write("\n")
-    os.replace(tmp, path)
+    tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+            json.dump({"name": recipe.name, "version": recipe.version}, f, indent=2)
+            f.write("\n")
+        _replace_with_retry(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
