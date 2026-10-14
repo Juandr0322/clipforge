@@ -164,3 +164,42 @@ def test_captions_off_gives_text_zero(job, tmp_path):
     for mp4 in (jd / "renders").glob("clip_???.mp4"):
         rep = load_report(jd, int(mp4.stem.split("_")[1]))
         assert rep.hook_score["sub_scores"]["text"]["score"] == 0
+
+
+def _rescore(job, tmp_path, value_adds):
+    """Copy the job, set value_adds, clear hook scores, rescore without
+    captions so only the overlay can contribute to the text sub-score."""
+    import shutil
+    from clipforge.quality.report import update_section
+    from clipforge.quality.run import hook_scores_job
+    jd = tmp_path / "h1"
+    shutil.copytree(job, jd)
+    ids = [int(p.stem.split("_")[1])
+           for p in (jd / "renders").glob("clip_???.mp4")]
+    for cid in ids:
+        update_section(jd, cid, "hook_score", None)
+        update_section(jd, cid, "value_adds", value_adds)
+    assert hook_scores_job(jd, MockDetector(lambda t: []),
+                           captions=False) == len(ids)
+    return [load_report(jd, cid).hook_score["sub_scores"]["text"]["score"]
+            for cid in ids]
+
+
+def test_applied_overlay_counts_for_text_score(job, tmp_path):
+    va = [{"name": "context_overlay", "applied": True, "reason": "x",
+           "start": 0.0, "end": 3.0, "text": "t"}]
+    scores = _rescore(job, tmp_path, va)
+    assert scores and all(s > 0 for s in scores)
+
+
+@pytest.mark.parametrize("va", [
+    None,
+    [{"name": "context_overlay", "applied": False, "reason": "x"}],
+    [{"name": "context_overlay", "applied": True, "start": "a", "end": 3}],
+    [{"name": "context_overlay", "applied": True, "start": 2, "end": 1}],
+    [{"name": "context_overlay", "applied": True}],
+    ["junk", 5, None],
+])
+def test_junk_or_unapplied_overlay_is_ignored(job, tmp_path, va):
+    scores = _rescore(job, tmp_path, va)
+    assert scores and set(scores) == {0}
