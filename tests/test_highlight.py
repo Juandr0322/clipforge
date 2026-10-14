@@ -606,6 +606,61 @@ def test_context_setup_uses_first_non_empty_line():
     assert c["context_setup"] == "the bet"
 
 
+def _huge_int_reply():
+    return '[{"start": 0, "end": 30, "score": 9' + "9" * 5000 + "}]"
+
+
+def _deep_reply():
+    return "[" * 100000 + "]" * 100000
+
+
+@pytest.mark.parametrize("make", [_huge_int_reply, _deep_reply],
+                         ids=["huge_int", "deep_nesting"])
+def test_hostile_reply_parses_to_empty(make):
+    assert _parse(make()) == []
+
+
+@pytest.mark.parametrize("make", [_huge_int_reply, _deep_reply],
+                         ids=["huge_int", "deep_nesting"])
+def test_hostile_reply_saved_and_warned_not_crashed(make, tmp_path, capsys):
+    h = AnthropicHighlighter(client=FakeClient([make()]))
+    h.debug_dir = tmp_path
+    ch = _chunk()
+    assert h.analyze_chunk(ch, 100.0) == []
+    f = tmp_path / f"highlight_raw_chunk_{ch.index:03d}.txt"
+    assert f.read_text(encoding="utf-8") == make()
+    assert "WARNING" in capsys.readouterr().err
+
+
+def test_stranger_pass_null_falls_back_to_passed():
+    (c,) = _parse(_item(stranger_check={"pass": None, "passed": False}))
+    assert "stranger_fail_reason" in c
+    (c,) = _parse(_item(stranger_check={"pass": True, "passed": False}))
+    assert "stranger_fail_reason" not in c
+
+
+@pytest.mark.parametrize("field", ["start", "end"])
+def test_bool_start_end_dropped(field):
+    assert _parse(_dumps(_base(**{field: True}))) == []
+
+
+def test_rejected_deduped_across_overlapping_chunks():
+    rej = {"start": 100, "end": 130, "score": 90, "hook": "bad",
+           "reason": "r", "stranger_check": {"pass": False, "reason": "why"}}
+    other = dict(rej, start=300, end=330, hook="other")
+
+    class H(Highlighter):
+        calls = 0
+
+        def analyze_chunk(self, chunk, source_duration):
+            H.calls += 1
+            return _parse(json.dumps([rej, other] if H.calls == 1 else [rej]))
+    cset = H().find_highlights(make_transcript(duration=3600))
+    assert H.calls >= 2
+    assert sorted((r.start, r.hook) for r in cset.rejected) == [
+        (100, "bad"), (300, "other")]
+
+
 def test_save_writes_lf_newlines(monkeypatch, tmp_path):
     seen = {}
     real = Path.write_text

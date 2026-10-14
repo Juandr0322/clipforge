@@ -108,8 +108,8 @@ def parse_llm_response(text: str, chunk: Chunk,
         return []
     try:
         raw = json.loads(m.group(0))
-    except json.JSONDecodeError:
-        return []
+    except (ValueError, RecursionError):  # JSONDecodeError is a ValueError;
+        return []  # >4300-digit ints raise ValueError, deep nesting RecursionError
     if not isinstance(raw, list):
         return []
 
@@ -120,6 +120,8 @@ def parse_llm_response(text: str, chunk: Chunk,
         if not isinstance(item, dict):
             continue
         try:
+            if isinstance(item["start"], bool) or isinstance(item["end"], bool):
+                continue
             start = float(item["start"])
             end = float(item["end"])
             score = int(item["score"])
@@ -204,8 +206,12 @@ def _stranger(sc) -> tuple[bool, str] | None:
     reason = ""
     if isinstance(sc, dict):
         reason = _first_line(sc.get("reason"), 300)
-        sc = sc["pass"] if "pass" in sc else sc.get("passed")
-    verdict = _scalar_verdict(sc)
+        # "pass" wins when recognisable, else fall back to "passed"
+        verdict = _scalar_verdict(sc.get("pass"))
+        if verdict is None:
+            verdict = _scalar_verdict(sc.get("passed"))
+    else:
+        verdict = _scalar_verdict(sc)
     return None if verdict is None else (verdict, reason)
 
 
@@ -264,6 +270,17 @@ class Highlighter(abc.ABC):
                     rejected.append(RejectedCandidate(
                         start=d["start"], end=d["end"], hook=d["hook"],
                         reason=why))
+
+        # chunks overlap, so the same rejected moment can be reported twice;
+        # reuse dedup() (rejects carry no score, so no min_score filter)
+        as_cands = [ClipCandidate(id=i, start=r.start, end=r.end, score=0,
+                                  hook=r.hook, reason=r.reason)
+                    for i, r in enumerate(rejected)]
+        by_key = {}
+        for r in rejected:
+            by_key.setdefault((r.start, r.end, r.hook), r)
+        rejected = [by_key[(c.start, c.end, c.hook)] for c in sorted(
+            dedup(as_cands), key=lambda c: c.start)]
 
         cands = [ClipCandidate(id=i, **d) for i, d in enumerate(all_raw)]
         cands = [c for c in cands if c.score >= min_score]
