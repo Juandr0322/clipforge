@@ -237,3 +237,88 @@ def test_stage_runner_idempotent(ready_job):
     m1 = refine_job(ready_job)
     m2 = refine_job(ready_job)
     assert len(m2.history) == len(m1.history)
+
+
+# ------------------------------------------------------- F11 hook-first trim
+
+def CT(i, s, e, **kw):
+    return ClipCandidate(id=i, start=s, end=e, score=80, hook="h",
+                         reason="r", **kw)
+
+
+def test_preamble_is_cut_so_trigger_sentence_opens_clip():
+    # segments start every 6.8 s; candidate 20-80 spans ~9 sentences
+    trig_seg = T.segments[5]
+    trig = trig_seg.start + 1.0
+    payoff = trig_seg.start + 30.0
+    base = refine_candidate(CT(0, 20.0, 80.0), T, None)
+    clip = refine_candidate(CT(0, 20.0, 80.0, trigger_t=trig,
+                               reaction_peak_t=trig + 5, payoff_end_t=payoff),
+                            T, None)
+    assert_clean(clip, T)
+    assert clip.segment_ids[0] == trig_seg.id
+    assert clip.speech_start == trig_seg.start
+    assert clip.start > base.start
+    assert clip.end >= payoff
+    assert 15 <= clip.duration <= 90
+    assert clip.trim_note is None
+    assert clip.start <= clip.trigger_t <= clip.reaction_peak_t \
+        <= clip.payoff_end_t <= clip.end
+
+
+def test_preamble_kept_when_cut_would_be_too_short():
+    trig_seg = T.segments[8]          # leaves < 15 s after the cut
+    cand = CT(0, 20.0, 66.0, trigger_t=trig_seg.start + 0.5)
+    base = refine_candidate(CT(0, 20.0, 66.0), T, None)
+    clip = refine_candidate(cand, T, None)
+    assert clip.start == base.start and clip.segment_ids == base.segment_ids
+    assert "too short" in clip.trim_note
+    assert_clean(clip, T)
+
+
+def test_preamble_kept_when_cut_would_drop_payoff():
+    trig_seg = T.segments[5]
+    # 120 s candidate: the 90 s cap trims the tail, so the payoff is lost
+    clip = refine_candidate(CT(0, 20.0, 140.0, trigger_t=trig_seg.start + 1,
+                               payoff_end_t=139.0), T, None)
+    assert clip.trim_note and "start kept" in clip.trim_note
+    assert_clean(clip, T)
+
+
+def test_no_trigger_refines_exactly_as_before():
+    a = refine_candidate(C(0, 20.0, 55.0), T, None)
+    assert a.trim_note is None and a.trigger_t is None
+    assert a.reaction_peak_t is None and a.payoff_end_t is None
+
+
+def test_bad_trigger_values_do_not_crash():
+    for bad in (float("nan"), float("inf"), -5.0, 1e9):
+        clip = refine_candidate(CT(0, 20.0, 55.0, trigger_t=bad), T, None)
+        assert_clean(clip, T)
+        assert clip.trigger_t is None
+
+
+def test_times_outside_refined_clip_are_cleared_and_kept_ordered():
+    # a long candidate gets tail-trimmed to 90 s; payoff past it is cleared
+    clip = refine_candidate(CT(0, 20.0, 200.0, trigger_t=30.0,
+                               reaction_peak_t=25.0,   # before trigger
+                               payoff_end_t=190.0), T, None)
+    assert clip.trigger_t == 30.0
+    assert clip.reaction_peak_t is None
+    assert clip.payoff_end_t is None
+    clip2 = refine_candidate(CT(0, 20.0, 55.0, trigger_t=30.0,
+                                reaction_peak_t=35.0, payoff_end_t=50.0),
+                             T, None)
+    assert (clip2.trigger_t, clip2.reaction_peak_t, clip2.payoff_end_t) \
+        == (30.0, 35.0, 50.0)
+
+
+def test_refined_clip_rejects_times_outside_or_unordered():
+    good = refine_candidate(C(0, 20.0, 55.0), T, None).model_dump()
+    with pytest.raises(ValueError):
+        RefinedSet.model_validate({"source_duration_sec": 300, "clips": [
+            {**good, "trigger_t": good["end"] + 1}]})
+    with pytest.raises(ValueError):
+        RefinedSet.model_validate({"source_duration_sec": 300, "clips": [
+            {**good, "trigger_t": good["start"] + 5,
+             "reaction_peak_t": good["start"] + 2}]})

@@ -67,17 +67,26 @@ The things he cares about are review throughput (clips per minute), clip quality
 11. **Analytics CSV import.** Imports YouTube, TikTok and Instagram analytics exports into the database, matched to clips through post URLs. Connecting to the platform APIs is out of scope because it needs Diego's credentials.
 12. **Weekly ranking and learning.** Ranks clips fairly across platforms and creators. Top performers become positive few-shot examples and flops become negative examples, **but only the ones Diego approves**.
 
-### Group D: v2 roadmap (confirmed by Diego, 2026-10-13)
-The full roadmap, with reasons and sources, is the "ClipForge v2 Roadmap" doc (https://claude.ai/code/artifact/a3f102b2-a1a6-44ad-b68f-502685badf6b). ClipForge grows from "podcast and stream clipper" into an editor for several content types: talk/podcast, gaming, storytime, talking head, cinematic and day-in-the-life. Each phase ends at a gate measured on the benchmark set (F25) before the next starts. Group C features keep their ids and move into these phases.
+### Group D: v2 roadmap (confirmed by Diego 2026-10-13, reordered 2026-10-14)
+The full roadmap, with reasons and sources, is the "ClipForge v2 Roadmap" doc (https://claude.ai/code/artifact/a3f102b2-a1a6-44ad-b68f-502685badf6b). ClipForge grows from "podcast and stream clipper" into an editor for several content types: gaming, talk/podcast, storytime, talking head, cinematic and day-in-the-life. Each phase ends at a gate measured on the benchmark set (F47) before the next starts. Group C features keep their ids and move into these phases.
 
-- **Phase 0, measure first.** F25: a benchmark command that runs a fixed set of Diego's real videos and records clips found, approval rate, minutes, tokens and $ per video. Every later feature must not get worse on the talk video and must get better on its target type.
-- **Phase 1, editor-style workspace (F26–F30).** The review page becomes a three-pane editor (media bin, 9:16 player, inspector) with a waveform timeline. Creators are folders with a brand kit. Jobs can be deleted (to a trash with undo), failed stages retried, captions corrected and one clip re-rendered. Still vanilla JS with no build step; wavesurfer.js (BSD-3) is loaded from a CDN.
-- **Phase 2, recipe engine (F08, F09, F31, F32, F10, F33, F34).** A recipe is one versioned data file per content type that tells every stage how to edit. The new Signals stage (F32) measures loudness, scene cuts (PySceneDetect, BSD-3), motion and faces locally, so highlight picking can find moments with little speech. F34 cuts AI cost: prompt caching, a compact transcript, a cheap first pass, optional batch mode and a usage log.
-- **Phase 3, recipes one at a time (F11–F13, F41–F45).** Talk first, then gaming, storytime, talking head and cinematic. Each recipe ships alone and is checked on the benchmark plus 5–10 real test posts.
-- **Phase 4, multi-file edits (F35–F38, F46).** A job can hold several files; Claude writes an edit plan (`edit_plan.json`) and ffmpeg assembles it. Plans can be reordered on the timeline and exported to editors through OpenTimelineIO (Apache-2.0).
-- **Phase 5, learning loop (F14–F20, F39, F40).** Exports, the clip database and analytics import, plus recipe A/B tracking and a trend log that turns into recipe proposals Diego approves.
+**Why the 2026-10-14 reorder.** Diego's real test on a gaming stream showed the highlight picks are good but the edit is not: captions appeared before the person spoke, the 9:16 crop followed the face cam and dropped the gameplay, and long stretches had nothing happening. Clients judge the clip, not the review page, so edit quality now comes before the workspace UI, and gaming is tuned before talk/podcast because most of Diego's footage is gameplay.
 
-Decisions: gaming is the first recipe after talk; the UI stays vanilla JS; Signals is an 8th stage; multi-file editing comes after the gaming recipe; the repo gets an MIT license. Code copied (not just ideas) from MIT/BSD projects keeps its notice in `THIRD_PARTY_NOTICES.md`; GPL/AGPL code is never copied in.
+- **Phase 0, measure first.** F47: a benchmark command that runs a fixed set of Diego's real videos and records clips found, approval rate, minutes, tokens and $ per video (built on branch f25-bench as "F25"; renumbered because main's F25 is the hook-type feature). Every later feature must not get worse on the other videos and must get better on its target type.
+- **Phase 1, edit quality, gaming first (F48, F31, F49, F13, F50, F51, F52).**
+  - F48 audio layer: sound effects on the beats highlight already finds, plus a quiet music bed ducked under speech. Added sound is an extra layer on top of the original game audio and voice and never replaces them.
+  - F31 recipe files (pulled forward) so gaming and talk can have different settings.
+  - F49 edit file per clip (`edit.json`): render from a list of kept ranges plus caption, overlay and audio tracks. Everything after it builds on this file.
+  - F13 + F50 captions: 1–3 word cards in the safe zone, a measured caption-lead number, optional forced alignment and spoken-word highlight.
+  - F51 dead-air cutting: jump cuts over stretches with no speech and quiet audio.
+  - F52 layouts: per-creator boxes for each face cam and the game, stacked multi-POV layouts instead of following one face.
+- **Phase 2, editor-style workspace (F26–F30, F53).** The review page becomes a three-pane editor (media bin, 9:16 player, inspector) with a waveform timeline. Creators are folders with a brand kit. Jobs can be deleted (to a trash with undo), failed stages retried, captions corrected and one clip re-rendered. F53 adds an Edit tab that changes a clip's `edit.json` on a multi-track timeline and re-renders it. Still vanilla JS with no build step; wavesurfer.js (BSD-3) is loaded from a CDN.
+- **Phase 3, recipe engine (F32, F33, F34).** The new Signals stage (F32) measures loudness, scene cuts (PySceneDetect, BSD-3), motion and faces locally, so highlight picking can find moments with little speech. F34 cuts AI cost: prompt caching, a compact transcript, a cheap first pass, optional batch mode and a usage log.
+- **Phase 4, recipes one at a time (F42, F41, F43–F45).** Gaming first, then talk, storytime, talking head and cinematic. Each recipe ships alone and is checked on the benchmark plus 5–10 real test posts.
+- **Phase 5, multi-file edits (F35–F38, F46).** A job can hold several files; Claude writes an edit plan that extends the F49 `edit.json` format and ffmpeg assembles it. Plans can be reordered on the timeline and exported to editors through OpenTimelineIO (Apache-2.0).
+- **Phase 6, learning loop (F14–F20, F39, F40).** Exports, the clip database and analytics import, plus recipe A/B tracking and a trend log that turns into recipe proposals Diego approves.
+
+Decisions: gaming is tuned first (2026-10-14, replacing "talk first"); edit quality comes before the workspace UI (2026-10-14); added music and sound effects are a quiet layer over the original audio (2026-10-14); the UI stays vanilla JS; Signals is an 8th stage; multi-file editing comes after the gaming recipe; the repo gets an MIT license. Code copied (not just ideas) from MIT/BSD projects keeps its notice in `THIRD_PARTY_NOTICES.md`; GPL/AGPL code is never copied in.
 
 ## 5. Data model sketch
 
@@ -96,6 +105,8 @@ These are additions. Every existing file keeps its shape or gains only optional 
 - `renders/clip_NNN.report.json` (new) is the per-clip quality report. Its sections are `hook_score` (total plus sub-scores and reasons), `value_adds` (list of {name, applied, reason}), `pacing_flags` (list of [start, end]), `variants` (list of {label, file, hook_score}), `loop` (score and suggested end) and `exports` (per platform: file, status, reason). Every section is optional.
 - `reviews.json` (backward compatible). A review can carry per-platform decisions. Old reviews are read as "same decision for all platforms".
 - `exports/<platform>/clip_NNN.mp4` and `clip_NNN.txt`.
+- The report gains an `audio_layer` section (F48: every added sound with its file, license, source and time, the levels used, and a reason for anything skipped), later `dead_air` (F51) and the layout used (F52).
+- `renders/clip_NNN.edit.json` (F49): kept ranges in absolute source seconds; captions, overlays, zoom, layout and audio cues in clip-relative seconds.
 
 **Per workspace**
 - `clipforge.db` (SQLite, git-ignored). It holds:
@@ -103,6 +114,9 @@ These are additions. Every existing file keeps its shape or gains only optional 
   - analytics snapshots per clip per day: views, likes, comments, shares, average view duration or retention when present
   - example decisions: positive or negative, approved when, by Diego
 - `references.json` holds trend references (URL, platform, niche, hook type, notes, date).
+- `creators/<slug>/layout.json` (F52): named face-cam and game boxes for that creator's stream layout.
+
+**Audio library (F48)** — a folder outside the repo (default `~/clipforge-audio`) with `library.json`. Each item has a file, kind (sfx or music), tags, license, source URL, optional attribution and the platforms it is cleared for. Items without a license and source are never used. No audio files are committed to the repo; ClipForge generates a small starter set of sound effects itself.
 
 **Per install**
 - Platform profiles: one data file per platform inside the package, edited by hand.
@@ -124,6 +138,6 @@ Keep the current look: dark background, monospace, teal accent, the green/red ap
 - Posting to any platform automatically, or scheduling posts.
 - YouTube, Instagram, TikTok, X or Facebook API connections. Analytics arrive only as CSV exports, and auth or OAuth flows are not planned.
 - Multi-user use, auth, cloud hosting, job queues, or exposing the server beyond localhost.
-- Trending or licensed music baked into exported files, AI voiceover, stock footage, or face/voice swaps. Trending sounds are added in each platform's app at posting time. A track the creator supplies may be used for beat-matched cuts (Group D).
+- Trending sounds baked into exported files (creators add those in each platform's app at posting time), AI voiceover, stock footage, or face/voice swaps. Royalty-free music beds and sound effects from Diego's license-tracked audio library are in scope (F48), always as a quiet layer under the original audio.
 - Processing footage Diego doesn't have rights to.
 - Rewriting the stage architecture or the manifest state machine. Adding a stage built the same way (JSON in and out, idempotent, verifies its own outputs) is allowed: F32 adds Signals as the 8th stage.

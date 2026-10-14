@@ -6,11 +6,13 @@ import pytest
 
 from clipforge.common.manifest import Manifest, Stage
 from clipforge.highlight.backends import (
-    MockHighlighter, build_system_prompt, get_highlighter, parse_llm_response,
+    Highlighter, MockHighlighter, build_system_prompt, get_highlighter, parse_llm_response,
 )
 from clipforge.highlight.chunker import Chunk, chunk_transcript
 from clipforge.highlight.run import HighlightError, highlight_job
-from clipforge.highlight.schema import CandidateSet, ClipCandidate, dedup
+from clipforge.highlight.schema import (
+    HOOK_TYPES, CandidateSet, ClipCandidate, RejectedCandidate, dedup,
+)
 from clipforge.ingest.ingest import ingest
 from clipforge.transcribe.backends import MockTranscriber
 from clipforge.transcribe.run import transcribe_job
@@ -604,3 +606,304 @@ def test_unreadable_failed_attempt_usage_never_fails_retry(
     assert json.loads((job / USAGE_NAME).read_text(encoding="utf-8")
                       )["attempts"] == 1
     assert "ignored an unreadable" in capsys.readouterr().err
+
+
+# ------------------------------------------------------- F10: v2 fields
+
+V2_FIELDS = ["trigger_t", "reaction_peak_t", "payoff_end_t", "context_setup",
+             "hook_type", "stranger_check"]
+
+
+def _item(**kw):
+    d = {"start": 100, "end": 130, "score": 80, "hook": "h", "reason": "r",
+         "type": "story"}
+    d.update(kw)
+    return json.dumps([d])
+
+
+def _parse(text):
+    return parse_llm_response(text, _chunk(), 3600.0)
+
+
+def test_prompt_names_every_new_field_and_backstory_rule():
+    sp = build_system_prompt()
+    for f in V2_FIELDS:
+        assert f in sp
+    assert "backstory" in sp and "rejected" in sp
+
+
+def test_parse_keeps_valid_v2_fields():
+    (c,) = _parse(_item(trigger_t=105, reaction_peak_t=115, payoff_end_t=125,
+                        context_setup="Host explains the bet.",
+                        hook_type="question"))
+    assert (c["trigger_t"], c["reaction_peak_t"], c["payoff_end_t"]) == (
+        105, 115, 125)
+    assert c["context_setup"] == "Host explains the bet."
+    assert c["hook_type"] == "question"
+
+
+@pytest.mark.parametrize("times", [
+    (120, 110, 125),      # out of order
+    (90, 110, 125),       # before start
+    (105, 115, 140),      # after end
+    (105, "x", 125),      # garbage
+    (105, 115, None),     # missing
+])
+def test_parse_clears_bad_times_keeps_candidate(times):
+    t, p, e = times
+    (c,) = _parse(_item(trigger_t=t, reaction_peak_t=p, payoff_end_t=e))
+    assert c["start"] == 100
+    assert not {"trigger_t", "reaction_peak_t", "payoff_end_t"} & c.keys()
+    ClipCandidate(id=0, **c)
+
+
+def test_parse_unknown_hook_type_and_multiline_context():
+    (c,) = _parse(_item(hook_type="clickbait",
+                        context_setup="line one\nline two\nthree"))
+    assert c["hook_type"] == "other"
+    assert c["context_setup"] == "line one"
+
+
+def test_failed_stranger_check_goes_to_rejected():
+    class H(Highlighter):
+        def analyze_chunk(self, chunk, source_duration):
+            return _parse(json.dumps([
+                {"start": 100, "end": 130, "score": 90, "hook": "bad",
+                 "reason": "r", "stranger_check":
+                 {"pass": False, "reason": "needs the earlier bet"}},
+                {"start": 200, "end": 230, "score": 85, "hook": "good",
+                 "reason": "r", "stranger_check": {"pass": True}},
+            ]))
+    cset = H().find_highlights(make_transcript(duration=600))
+    assert [c.hook for c in cset.candidates] == ["good"]
+    assert len(cset.rejected) == 1
+    assert cset.rejected[0].reason == "needs the earlier bet"
+    assert cset.schema_version == 2
+    again = CandidateSet.model_validate_json(cset.model_dump_json())
+    assert again.rejected[0].hook == "bad"
+
+
+def test_v1_fixture_still_loads():
+    cs = CandidateSet.load(Path(__file__).parent / "fixtures"
+                           / "candidates_v1.json")
+    c = cs.candidates[0]
+    assert cs.rejected == [] and c.trigger_t is None and c.hook_type is None
+
+
+def test_mock_fills_v2_fields_in_order():
+    cset = MockHighlighter().find_highlights(make_transcript(duration=1800))
+    assert cset.candidates
+    for c in cset.candidates:
+        assert c.hook_type == "bold_claim" and c.context_setup
+        assert (c.start <= c.trigger_t <= c.reaction_peak_t
+                <= c.payoff_end_t <= c.end)
+
+
+def test_mock_pipeline_run_writes_v2_candidates(transcribed_job, tmp_path):
+    job = _stage_job(transcribed_job, tmp_path)
+    highlight_job(job, MockHighlighter(), force=True)
+    data = json.loads((job / "candidates.json").read_text(encoding="utf-8"))
+    assert data["schema_version"] == 2
+    for c in data["candidates"]:
+        assert (c["start"] <= c["trigger_t"] <= c["reaction_peak_t"]
+                <= c["payoff_end_t"] <= c["end"])
+
+
+# ------------------------------------------------------- F10 review fixes
+
+JUNK = [None, [], {}, [1], {"a": 1}, 7, -1.5, True, "", "x\ny", 10 ** 400,
+        float("nan"), float("inf")]
+
+
+def _dumps(d):
+    return json.dumps([d])  # allow_nan default: emits NaN/Infinity
+
+
+def _base(**kw):
+    d = {"start": 100, "end": 130, "score": 80, "hook": "h", "reason": "r",
+         "type": "story"}
+    d.update(kw)
+    return d
+
+
+@pytest.mark.parametrize("junk", JUNK, ids=repr)
+@pytest.mark.parametrize("field", ["trigger_t", "reaction_peak_t",
+                                   "payoff_end_t", "context_setup",
+                                   "hook_type", "stranger_check", "type",
+                                   "hook", "reason"])
+def test_junk_in_any_field_never_raises_and_keeps_candidate(field, junk):
+    out = _parse(_dumps(_base(**{field: junk})))
+    assert len(out) == 1
+    ClipCandidate(id=0, **{k: v for k, v in out[0].items()
+                           if k != "stranger_fail_reason"})
+
+
+@pytest.mark.parametrize("field", ["start", "end", "score"])
+@pytest.mark.parametrize("junk", [None, [], {}, "x", 10 ** 400,
+                                  float("nan"), float("inf")], ids=repr)
+def test_junk_start_end_score_drops_entry_without_raising(field, junk):
+    out = _parse(_dumps(_base(**{field: junk})))
+    if field == "score" and junk == 10 ** 400:
+        assert [c["score"] for c in out] == [100]  # huge int clamps, as before
+    else:
+        assert out == []
+
+
+@pytest.mark.parametrize("ht", [[], {}, 5, ["a"]])
+def test_hook_type_unhashable_or_wrong_type_becomes_other(ht):
+    (c,) = _parse(_dumps(_base(hook_type=ht, type=ht)))
+    assert c["hook_type"] == "other" and c["type"] == "other"
+
+
+def test_hook_type_null_stays_absent():
+    (c,) = _parse(_item(hook_type=None))
+    assert "hook_type" not in c
+
+
+def test_num_rejects_bad_numbers():
+    from clipforge.highlight.backends import _num
+    for bad in (10 ** 400, True, False, float("nan"), float("inf"),
+                float("-inf"), "5", None):
+        assert _num(bad) is None
+    assert _num(5) == 5.0
+
+
+@pytest.mark.parametrize("sc,fails", [
+    (False, True), (0, True), ("false", True), ("No", True), ("FAIL", True),
+    ({"pass": False}, True), ({"pass": "false"}, True), ({"pass": 0}, True),
+    ({"passed": False}, True), ({"passed": "no"}, True),
+    (True, False), (1, False), ("yes", False), ({"pass": True}, False),
+    ({"passed": "true"}, False),
+    ([], False), ("maybe", False), ({}, False), ({"pass": []}, False),
+    (None, False),
+])
+def test_stranger_check_shapes(sc, fails):
+    (c,) = _parse(_item(stranger_check=sc))
+    assert ("stranger_fail_reason" in c) is fails
+
+
+def test_missing_stranger_check_passes_and_is_absent():
+    (c,) = _parse(_item())
+    assert "stranger_fail_reason" not in c and "stranger_check" not in c
+
+
+def test_stranger_check_stored_for_passing_candidate():
+    (c,) = _parse(_item(stranger_check={"pass": True,
+                                        "reason": "\n\nSelf-contained\nmore"}))
+    assert c["stranger_check"] == {"pass": True, "reason": "Self-contained"}
+    assert ClipCandidate(id=0, **c).stranger_check.passed is True
+
+
+def test_context_setup_uses_first_non_empty_line():
+    (c,) = _parse(_item(context_setup="\n  \n  the bet \n second"))
+    assert c["context_setup"] == "the bet"
+
+
+def _huge_int_reply():
+    return '[{"start": 0, "end": 30, "score": 9' + "9" * 5000 + "}]"
+
+
+def _deep_reply():
+    return "[" * 100000 + "]" * 100000
+
+
+@pytest.mark.parametrize("make", [_huge_int_reply, _deep_reply],
+                         ids=["huge_int", "deep_nesting"])
+def test_hostile_reply_parses_to_empty(make):
+    assert _parse(make()) == []
+
+
+@pytest.mark.parametrize("make", [_huge_int_reply, _deep_reply],
+                         ids=["huge_int", "deep_nesting"])
+def test_hostile_reply_saved_and_warned_not_crashed(make, tmp_path, capsys):
+    h = AnthropicHighlighter(client=FakeClient([make()]))
+    h.debug_dir = tmp_path
+    ch = _chunk()
+    assert h.analyze_chunk(ch, 100.0) == []
+    f = tmp_path / f"highlight_raw_chunk_{ch.index:03d}.txt"
+    assert f.read_text(encoding="utf-8") == make()
+    assert "WARNING" in capsys.readouterr().err
+
+
+def test_stranger_pass_null_falls_back_to_passed():
+    (c,) = _parse(_item(stranger_check={"pass": None, "passed": False}))
+    assert "stranger_fail_reason" in c
+    (c,) = _parse(_item(stranger_check={"pass": True, "passed": False}))
+    assert "stranger_fail_reason" not in c
+
+
+@pytest.mark.parametrize("field", ["start", "end"])
+def test_bool_start_end_dropped(field):
+    assert _parse(_dumps(_base(**{field: True}))) == []
+
+
+def test_rejected_deduped_across_overlapping_chunks():
+    rej = {"start": 100, "end": 130, "score": 90, "hook": "bad",
+           "reason": "r", "stranger_check": {"pass": False, "reason": "why"}}
+    other = dict(rej, start=300, end=330, hook="other")
+
+    class H(Highlighter):
+        calls = 0
+
+        def analyze_chunk(self, chunk, source_duration):
+            H.calls += 1
+            return _parse(json.dumps([rej, other] if H.calls == 1 else [rej]))
+    cset = H().find_highlights(make_transcript(duration=3600))
+    assert H.calls >= 2
+    assert sorted((r.start, r.hook) for r in cset.rejected) == [
+        (100, "bad"), (300, "other")]
+
+
+def test_save_writes_lf_newlines(monkeypatch, tmp_path):
+    seen = {}
+    real = Path.write_text
+
+    def spy(self, data, *a, **kw):
+        seen.update(kw)
+        return real(self, data, *a, **kw)
+    monkeypatch.setattr(Path, "write_text", spy)
+    CandidateSet(engine="x", source_duration_sec=60.0).save(
+        tmp_path / "c.json")
+    assert seen.get("newline") == "\n" and seen.get("encoding") == "utf-8"
+    assert b"\r\n" not in (tmp_path / "c.json").read_bytes()
+
+
+def test_save_load_roundtrip_rejected_and_stranger_check(tmp_path):
+    cs = CandidateSet(
+        engine="x", source_duration_sec=100.0,
+        candidates=[ClipCandidate(
+            id=0, start=10, end=40, score=80, hook="h", reason="r",
+            stranger_check={"pass": True, "reason": "claro, sin contexto ñ"})],
+        rejected=[RejectedCandidate(start=50, end=80, hook="¿qué?",
+                                    reason="necesita contexto: café")])
+    p = tmp_path / "c.json"
+    cs.save(p)
+    raw = json.loads(p.read_text(encoding="utf-8"))
+    assert raw["candidates"][0]["stranger_check"]["pass"] is True
+    back = CandidateSet.load(p)
+    assert back == cs
+    assert back.rejected[0].reason == "necesita contexto: café"
+
+
+def test_hook_types_exact_set():
+    assert HOOK_TYPES == {"bold_claim", "question", "story_open",
+                          "contrarian", "number", "reveal", "emotion",
+                          "reaction", "funny", "other"}
+
+
+def test_prompt_lists_every_hook_type_and_definitions():
+    sp = build_system_prompt()
+    line = next(ln for ln in sp.splitlines() if '"hook_type": "<' in ln)
+    listed = set(line.split('"hook_type": "<')[1].split(">")[0].split("|"))
+    assert listed == HOOK_TYPES
+    for ht in HOOK_TYPES:
+        assert ht in sp
+    assert "a big live reaction (yelling, shock, celebration)" in sp
+    assert "a fail, joke or chaotic moment" in sp
+    assert "OPENING hook" in sp and "clip as a whole" in sp
+
+
+@pytest.mark.parametrize("ht", ["reaction", "funny"])
+def test_parse_keeps_new_hook_types(ht):
+    (c,) = _parse(_item(hook_type=ht, type="story"))
+    assert c["hook_type"] == ht and c["type"] == "story"
