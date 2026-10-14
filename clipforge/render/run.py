@@ -22,6 +22,7 @@ from clipforge.render.overlays import (
 from clipforge.render.render import (
     RenderError, make_contact_sheet, render_clip, verify_render,
 )
+from clipforge.audio.layer import AudioLayerConfig
 from clipforge.transcribe.schema import Transcript
 
 
@@ -134,19 +135,54 @@ def _plan_extras(clip, fields: dict, cfg: OverlayConfig, renders: Path):
 
 
 def _record_value_adds(job_dir: Path, clip_id: int, entries: list) -> None:
+    _record(job_dir, clip_id, "value_adds", entries)
+
+
+def _record(job_dir: Path, clip_id: int, section: str, value) -> None:
     try:
         from clipforge.quality.report import update_section
-        update_section(job_dir, clip_id, "value_adds", entries)
+        update_section(job_dir, clip_id, section, value)
     except Exception:  # noqa: BLE001 - a report must not fail a render
-        print(f"clip {clip_id}: value-add report could not be written",
+        print(f"clip {clip_id}: {section} report could not be written",
               file=sys.stderr)
+
+
+def _plan_audio(clip, fields: dict, entries: list, card: float,
+                cfg: AudioLayerConfig, lib, norm: Path, words, key: str,
+                renders: Path):
+    """Build the F48 audio layer for one clip. Returns (layer_path or None,
+    report section). The beats come from the value-adds actually planned,
+    so a sound never marks something that isn't on screen."""
+    from clipforge.audio.layer import (
+        Beats, build_layer, decode_audio, speech_spans, write_layer,
+    )
+    dur = clip.end - clip.start
+    va = {e["name"]: e for e in entries}
+    raw = fields.get("reaction_peak_t")
+    peak = valid_rel_time(None if raw is None else raw - clip.start, dur)
+    ov = va.get("context_overlay", {})
+    beats = Beats(
+        duration=dur, total=dur + card, reaction_peak_t=peak,
+        zoom_applied=bool(va.get("punch_in", {}).get("applied")),
+        overlay_t=ov.get("start") if ov.get("applied") else None,
+        end_card_t=dur if card > 0 else None)
+    original = decode_audio(norm, clip.start, dur)
+    spans = speech_spans(words, clip.start, clip.end)
+    layer, rep = build_layer(original, dur + card, beats, spans, cfg, lib,
+                             key)
+    if layer is None:
+        return None, rep
+    path = renders / f"clip_{clip.id:03d}.layer.f32"
+    write_layer(path, layer)
+    return path, rep
 
 
 def render_job(job_dir: str | Path, force: bool = False,
                captions: bool = True,
                style: CaptionStyle | None = None,
                contact_sheets: bool = True,
-               overlays: OverlayConfig | None = None) -> Manifest:
+               overlays: OverlayConfig | None = None,
+               audio: AudioLayerConfig | None = None) -> Manifest:
     job_dir = Path(job_dir)
     m = Manifest.load(job_dir)
 
@@ -165,7 +201,12 @@ def render_job(job_dir: str | Path, force: bool = False,
         renders.mkdir(exist_ok=True)
         norm = job_dir / m.ingest.normalized_video
         cfg = overlays or OverlayConfig.from_env()
+        acfg = audio or AudioLayerConfig.from_env()
         v2 = _v2_fields(job_dir, m, rs)
+        lib = None
+        if acfg.sfx or acfg.music:
+            from clipforge.audio.library import load_library
+            lib = load_library(acfg.library_dir)
 
         for clip in rs.clips:
             out = renders / f"clip_{clip.id:03d}.mp4"
@@ -191,32 +232,74 @@ def render_job(job_dir: str | Path, force: bool = False,
                                      "end_card")]
             expected = clip.end - clip.start + card
             plain = zoom is None and ov_ass is None and not card
+
+            layer, arep = None, None
+            if lib is not None:
+                try:
+                    layer, arep = _plan_audio(
+                        clip, v2.get(clip.id, {}), entries, card, acfg, lib,
+                        norm, t.words, f"{job_dir.name}:{clip.id}", renders)
+                except Exception:  # noqa: BLE001 - the layer is best-effort
+                    layer, arep = None, {"applied": False,
+                                         "reason": "could not be built"}
+            else:
+                arep = {"applied": False, "reason": "disabled by "
+                        "CLIPFORGE_SFX and CLIPFORGE_MUSIC"}
+
+            # Attempts, best first: everything; then without the added
+            # audio; then the plain cut (which never gets the layer, since
+            # its sounds mark extras that would be missing).
+            attempts = []
+            if layer is not None:
+                attempts.append(("extras" if not plain else "plain", layer))
+            attempts.append(("extras" if not plain else "plain", None))
+            if not plain:
+                attempts.append(("plain", None))
             try:
-                if plain:
-                    render_clip(norm, out, clip.start, clip.end, crop, **kw)
-                    verify_render(out, clip.end - clip.start)
-                else:
-                    render_clip(norm, out, clip.start, clip.end, crop,
-                                zoom=zoom, overlay_ass=ov_ass,
-                                end_card_sec=card, **kw)
-                    verify_render(out, expected)
-            except RenderError:
-                if plain:
-                    raise
-                # extras must never fail the stage: redo the plain cut
-                entries = [{"name": e["name"], "applied": False,
-                            "reason": "extras failed, rendered without them"}
-                           if e["applied"] else e for e in entries]
-                if ov_ass is not None:
-                    ov_ass.unlink(missing_ok=True)
-                render_clip(norm, out, clip.start, clip.end, crop, **kw)
-                verify_render(out, clip.end - clip.start)
+                for i, (kind, lay) in enumerate(attempts):
+                    try:
+                        if kind == "plain":
+                            render_clip(norm, out, clip.start, clip.end,
+                                        crop, audio_layer=lay, **kw)
+                            verify_render(out, clip.end - clip.start)
+                        else:
+                            render_clip(norm, out, clip.start, clip.end,
+                                        crop, zoom=zoom, overlay_ass=ov_ass,
+                                        end_card_sec=card, audio_layer=lay,
+                                        **kw)
+                            verify_render(out, expected if not plain
+                                          else clip.end - clip.start)
+                    except RenderError:
+                        if i == len(attempts) - 1:
+                            raise
+                        continue
+                    if layer is not None and lay is None:
+                        # its sounds mark on-screen extras: never play
+                        # them over a cut that lost those extras
+                        arep = {**arep, "applied": False, "reason":
+                                "mixing failed, rendered without added audio"
+                                if kind != "plain" or plain else
+                                "the render with extras failed; plain cut "
+                                "used without added audio"}
+                    if kind == "plain" and not plain:
+                        # extras must never fail the stage: plain cut used
+                        entries = [{"name": e["name"], "applied": False,
+                                    "reason": "extras failed, rendered "
+                                              "without them"}
+                                   if e["applied"] else e for e in entries]
+                        if ov_ass is not None:
+                            ov_ass.unlink(missing_ok=True)
+                    break
+            finally:
+                if layer is not None:
+                    layer.unlink(missing_ok=True)
             entries.append({
                 "name": "captions", "applied": bool(cards),
                 "reason": ("burned in from the transcript" if cards else
                            "captions disabled" if not captions
                            else "no words in this clip")})
             _record_value_adds(job_dir, clip.id, entries)
+            _record(job_dir, clip.id, "audio_layer", arep)
             if contact_sheets:
                 make_contact_sheet(out, renders / f"clip_{clip.id:03d}_qa.png")
 
