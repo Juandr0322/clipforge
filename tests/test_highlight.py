@@ -555,3 +555,32 @@ def test_failed_attempt_tokens_carried_into_retry(transcribed_job, tmp_path):
     highlight_job(job, Spends(), force=True)   # forced redo after a success
     rec = json.loads((job / USAGE_NAME).read_text(encoding="utf-8"))
     assert rec["attempts"] == 1 and rec["input_tokens"] == 10 * rec["calls"]
+
+
+@pytest.mark.parametrize("damage", [
+    {"attempts": "x"}, {"inference_geo": 5}, {"input_tokens": "lots"},
+])
+def test_malformed_failed_attempt_usage_never_fails_retry(
+        transcribed_job, tmp_path, capsys, damage):
+    class SpendsThenFails(MockHighlighter):
+        def analyze_chunk(self, chunk, source_duration):
+            self.add_usage(_usage(input_tokens=7))
+            raise RuntimeError("boom")
+
+    job = _stage_job(transcribed_job, tmp_path)
+    with pytest.raises(RuntimeError):
+        highlight_job(job, SpendsThenFails(), force=True)
+    path = job / USAGE_NAME
+    rec = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps({**rec, **damage}), encoding="utf-8")
+
+    with pytest.raises(RuntimeError):         # a second failure is recorded
+        highlight_job(job, SpendsThenFails(), force=True)
+    m = Manifest.load(job)
+    assert len([h for h in m.history if not h.ok]) == 2
+    path.write_text(json.dumps({**rec, **damage}), encoding="utf-8")
+
+    m = highlight_job(job, MockHighlighter(), force=True)   # retry succeeds
+    assert m.stage == Stage.CANDIDATES_READY and m.failed_stage is None
+    assert json.loads(path.read_text(encoding="utf-8"))["attempts"] == 1
+    assert "ignored a malformed" in capsys.readouterr().err

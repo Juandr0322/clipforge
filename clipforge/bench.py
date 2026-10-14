@@ -132,7 +132,8 @@ is compared with the last earlier run that included it.
 
 Exit codes: 0 all good, 1 a video failed or is missing, 2 setup problem
 (bench.json, ffmpeg, no bench folder), 3 results.csv is open in another
-program (close it and run `bench report`).
+program (close it and run `bench report`). When results.csv is locked AND a
+video failed, the exit code is 3; the failed video is still listed above.
 """
 
 

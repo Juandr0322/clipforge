@@ -41,20 +41,25 @@ def _failed_attempt_usage(job_dir: Path, m: Manifest) -> dict | None:
 
 def merge_usage(record: dict, prior: dict | None) -> dict:
     """record + prior when both used the same model; `attempts` counts the
-    runs whose tokens are in the totals."""
+    runs whose tokens are in the totals. A malformed prior file (hand-edited,
+    half-written) is ignored with a warning: usage must never fail the stage."""
     if not prior or prior.get("model") != record.get("model"):
         return {**record, "attempts": 1}
-    merged = dict(record)
-    for f in _SUMMED:
-        try:
+    try:
+        merged = dict(record)
+        for f in _SUMMED:
             merged[f] = int(record.get(f) or 0) + int(prior.get(f) or 0)
-        except (TypeError, ValueError):
-            pass
-    merged["inference_geo"] = sorted(
-        set(record.get("inference_geo") or []) |
-        set(prior.get("inference_geo") or []))
-    merged["attempts"] = int(prior.get("attempts") or 1) + 1
-    return merged
+        geos = prior.get("inference_geo") or []
+        if not isinstance(geos, list):
+            raise TypeError("inference_geo is not a list")
+        merged["inference_geo"] = sorted(
+            set(record.get("inference_geo") or []) | {str(g) for g in geos})
+        merged["attempts"] = int(prior.get("attempts") or 1) + 1
+        return merged
+    except (TypeError, ValueError):
+        print(f"[highlight] WARNING: ignored a malformed {USAGE_NAME} from an "
+              "earlier attempt", file=sys.stderr)
+        return {**record, "attempts": 1}
 
 
 def _remove_quietly(path: Path) -> None:
