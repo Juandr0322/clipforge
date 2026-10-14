@@ -7,6 +7,7 @@ failing the others.
 """
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 
@@ -16,6 +17,24 @@ from clipforge.quality.report import load_report, update_section
 from clipforge.refine.refine import RefinedSet
 from clipforge.render.captions import group_words
 from clipforge.transcribe.schema import Transcript
+
+
+def _overlay_span(rep) -> list[tuple[float, float]]:
+    """Clip-relative (start, end) of the applied context overlay, read from
+    the report's value_adds. Missing, not applied or malformed -> []."""
+    try:
+        for v in (rep.value_adds or []) if rep is not None else []:
+            if isinstance(v, dict) and v.get("name") == "context_overlay" \
+                    and v.get("applied") is True:
+                a, b = v["start"], v["end"]
+                ok = all(isinstance(x, (int, float))
+                         and not isinstance(x, bool) and math.isfinite(x)
+                         for x in (a, b))
+                if ok and 0 <= a < b:
+                    return [(float(a), float(b))]
+    except Exception:  # noqa: BLE001 - caption-only scoring still works
+        pass
+    return []
 
 
 def hook_scores_job(job_dir: Path, detector, captions: bool = True) -> int:
@@ -34,10 +53,11 @@ def hook_scores_job(job_dir: Path, detector, captions: bool = True) -> int:
         if rep is not None and rep.hook_score is not None:
             continue
         try:
-            spans = []
+            spans = _overlay_span(rep)
             if captions:
-                spans = [(c.start, c.end)
-                         for c in group_words(t.words, clip.start, clip.end)]
+                spans += [(c.start, c.end)
+                          for c in group_words(t.words, clip.start,
+                                               clip.end)]
             score = hook_score(mp4, t.words, clip.start, clip.end,
                                detector, spans)
             update_section(job_dir, clip.id, "hook_score", score)
