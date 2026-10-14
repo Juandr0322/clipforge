@@ -2,6 +2,7 @@
 <!-- Newest entry at the top. The lead adds one entry per feature attempt.
      Every agent reads the top of this file first, so keep entries to 1–2 lines. -->
 
+- 2026-10-14 · F31 · built, reviewed PASS (PR, not yet merged) · six versioned recipe files (talk, gaming, storytime, talking_head, cinematic, day_in_life), validated on load, recorded per job in recipe.json; gaming carries the F48 audio defaults (SFX -6, music -20 cap -6, duck -6); a bad recipe fails the job visibly. Also touched cli.py and .env.example.
 - 2026-10-14 · F48 · merged · Diego listened on the Ron video and merged PR #4. Next: F31, and rebase PR #3 (F47 bench).
 - 2026-10-14 · F48 · built (PR, not yet merged) · audio layer: starter SFX (generated) or library files on the reaction peak/punch-in/overlay/end card, music bed ducked under speech, all relative to the clip's own level and mixed on top of the original (amix normalize=0, then -14 LUFS); library.json with licence/source per file + `clipforge audio check|add`; report section audio_layer; never fails a render. 616 tests OK. Next: Diego listens on the Ron video, then F31.
 - 2026-10-14 · plan · Diego's gaming test: picks good, edit weak (captions early, face cam only, dead air). New Phase 1 "edit quality, gaming first": F48 audio layer → F31 → F49 edit.json → F13/F50 captions → F51 dead air → F52 layouts; workspace UI next, plus F53 Edit tab. Roadmap F26–F46 ported from f25-bench; bench renumbered F47 (main's F25 is hook types). Next: F48.
