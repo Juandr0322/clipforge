@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
@@ -92,6 +93,13 @@ def run_pipeline(job_dir: Path, cfg: PipelineConfig,
         progress("rendering clips…")
         from clipforge.render.run import render_job
         m = render_job(job_dir, captions=cfg.captions)
+
+    from clipforge.quality.report import quality_job
+    try:
+        quality_job(job_dir)  # idempotent: only creates missing reports
+    except Exception:  # noqa: BLE001 - reports must not fail a rendered job
+        print("quality reports could not be written; "
+              "re-run the pipeline to retry", file=sys.stderr)
 
     progress("done")
     return m
