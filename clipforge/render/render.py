@@ -129,7 +129,12 @@ def render_clip(normalized_video: Path, out_path: Path, start: float,
                 fps: float, ass_path: Path | None = None,
                 workdir: Path | None = None, zoom=None,
                 overlay_ass: Path | None = None,
-                end_card_sec: float = 0.0) -> None:
+                end_card_sec: float = 0.0,
+                audio_layer: Path | None = None) -> None:
+    """`audio_layer` (F48) is a raw float32 stereo 48 kHz track, clip-
+    relative, covering the clip plus any end card. It is mixed on top of the
+    original audio at the levels it was built with, then the mix is
+    normalised as usual."""
     duration = end - start
     geom = CropGeometry.for_source(src_w, src_h)
 
@@ -146,12 +151,30 @@ def render_clip(normalized_video: Path, out_path: Path, start: float,
     if end_card_sec > 0:
         af += f",apad=pad_dur={end_card_sec:.3f}"
         total = duration + end_card_sec
+    if audio_layer is None:
+        audio_args = ["-vf", vf, "-af", af]
+        extra_in = []
+    else:
+        # original (padded under an end card) + layer, summed without
+        # amix's 1/n scaling so the layer keeps the level it was built at
+        pad = (f",apad=pad_dur={end_card_sec:.3f}" if end_card_sec > 0
+               else "")
+        fmt = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
+        graph = (f"[0:a]aresample=48000,{fmt}{pad}[orig];"
+                 f"[1:a]{fmt}[layer];"
+                 "[orig][layer]amix=inputs=2:duration=first:"
+                 "dropout_transition=0:normalize=0,"
+                 f"loudnorm=I={TARGET_LUFS}:TP=-1.5:LRA=11[aout]")
+        extra_in = ["-f", "f32le", "-ar", "48000", "-ac", "2",
+                    "-i", str(audio_layer)]
+        audio_args = ["-filter_complex", graph, "-map", "0:v:0",
+                      "-vf", vf, "-map", "[aout]"]
     _run([
         "ffmpeg", "-y",
         "-ss", f"{start:.3f}", "-t", f"{duration:.3f}",
         "-i", str(normalized_video),
-        "-vf", vf,
-        "-af", af,
+        *extra_in,
+        *audio_args,
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "160k", "-ar", "48000",

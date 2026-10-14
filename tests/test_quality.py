@@ -84,7 +84,8 @@ def test_concurrent_writers_different_sections(tmp_path):
             errs.append(e)
 
     vals = {"hook_score": {"a": 1}, "value_adds": [1], "pacing_flags": [2],
-            "variants": [3], "loop": {"b": 2}, "exports": [4]}
+            "variants": [3], "loop": {"b": 2}, "exports": [4],
+            "audio_layer": {"c": 5}}
     ts = [threading.Thread(target=w, args=kv) for kv in vals.items()]
     for t in ts:
         t.start()
