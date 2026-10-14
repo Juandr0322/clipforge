@@ -2,6 +2,7 @@
 <!-- Newest entry at the top. The lead adds one entry per feature attempt.
      Every agent reads the top of this file first, so keep entries to 1–2 lines. -->
 
+- 2026-10-14 · F48 · merged · Diego listened on the Ron video and merged PR #4. Next: F31, and rebase PR #3 (F47 bench).
 - 2026-10-14 · F48 · built (PR, not yet merged) · audio layer: starter SFX (generated) or library files on the reaction peak/punch-in/overlay/end card, music bed ducked under speech, all relative to the clip's own level and mixed on top of the original (amix normalize=0, then -14 LUFS); library.json with licence/source per file + `clipforge audio check|add`; report section audio_layer; never fails a render. 616 tests OK. Next: Diego listens on the Ron video, then F31.
 - 2026-10-14 · plan · Diego's gaming test: picks good, edit weak (captions early, face cam only, dead air). New Phase 1 "edit quality, gaming first": F48 audio layer → F31 → F49 edit.json → F13/F50 captions → F51 dead air → F52 layouts; workspace UI next, plus F53 Edit tab. Roadmap F26–F46 ported from f25-bench; bench renumbered F47 (main's F25 is hook types). Next: F48.
 - 2026-10-14 · F12 · merged · context overlay (ASS, LLM text sanitised), punch-in zoom on the reaction peak following the face-tracked crop, optional end card, value_adds checklist in each report, hook text score counts the overlay; 5 CLIPFORGE_* settings. Review FAIL fixed (F11 interaction, -t changed plain renders). 570 tests + mock e2e OK. ffmpeg 8.x untested locally: CI must confirm. Next: F13/F14/F15.
