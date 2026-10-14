@@ -32,9 +32,14 @@ def _failed_attempt_usage(job_dir: Path, m: Manifest) -> dict | None:
     counting them. A forced re-run after a success starts from zero."""
     if m.failed_stage != Stage.CANDIDATES_READY:
         return None
+    path = job_dir / USAGE_NAME
+    if not path.is_file():
+        return None
     try:
-        prior = json.loads((job_dir / USAGE_NAME).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        prior = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 — metric only: any damage means "none"
+        print(f"[highlight] WARNING: ignored an unreadable {USAGE_NAME} "
+              "from an earlier attempt", file=sys.stderr)
         return None
     return prior if isinstance(prior, dict) else None
 
@@ -56,7 +61,7 @@ def merge_usage(record: dict, prior: dict | None) -> dict:
             set(record.get("inference_geo") or []) | {str(g) for g in geos})
         merged["attempts"] = int(prior.get("attempts") or 1) + 1
         return merged
-    except (TypeError, ValueError):
+    except Exception:  # noqa: BLE001 — metric only; never fail the stage
         print(f"[highlight] WARNING: ignored a malformed {USAGE_NAME} from an "
               "earlier attempt", file=sys.stderr)
         return {**record, "attempts": 1}
@@ -106,8 +111,9 @@ def highlight_job(job_dir: str | Path, highlighter: Highlighter,
 
     started = datetime.now(timezone.utc)
     highlighter.usage = None      # no carry-over from another job
-    prior = _failed_attempt_usage(job_dir, m)
+    prior = None
     try:
+        prior = _failed_attempt_usage(job_dir, m)
         t = Transcript.load(job_dir / m.transcript_path)
         # raw replies and usage from a previous (forced) run would mislead;
         # tokens from failed attempts are kept in `prior`

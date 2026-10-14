@@ -591,8 +591,8 @@
         "The bench tests use temp folders only and never touch the real home folder, workspace or .env (the highlight tests keep reusing the existing git-ignored tests/fixtures/speech_30s.mp4)",
         "A results.csv held open by another program (Excel on Windows) never loses a run: run files are saved, the command prints how to retry and exits 3; partial runs (--only) compare each video with its last earlier run (tests)"
       ],
-      "passes": false,
-      "notes": "Bench videos and results live in Diego's bench folder, not in git (they may carry client names). The usage log is the first piece of F34."
+      "passes": true,
+      "notes": "Bench videos and results live in Diego's bench folder, not in git (they may carry client names). The usage log is the first piece of F34. Exit codes: 0 ok, 1 a video failed/missing, 2 setup, 3 results.csv locked (3 wins over 1). highlight_usage.json carries tokens from failed attempts into a retry ('attempts'); any damaged prior file is ignored with a warning. Took 3 review rounds; round 3 was a one-line widening of the fallback's except, verified against the reviewer's repro cases."
     },
     {
       "id": "F26",

@@ -40,3 +40,13 @@
 2026-10-14 | F09 | reviewer | MAJOR | builder committed 7 sandbox placeholder paths under .claude/ (git add -A)
 2026-10-14 | F09 | reviewer | MINOR | report temp file written without newline="\n" (CRLF on Windows); quality_job failure after RENDERED was silent
 2026-10-14 | F09 | reviewer | MINOR | open: private store helpers imported, duplicated fixture, stale reports after render --force, LF test only bites on Windows, corrupt-report recovery undecided
+2026-10-13 | F25 | reviewer | MAJOR | compare_latest only compared with the run just before; partial --only runs lost their comparison
+2026-10-13 | F25 | reviewer | MAJOR | results.csv held open by Excel (Windows) crashed bench run/report with a traceback after the run
+2026-10-13 | F25 | reviewer | MINOR | "~nosuchuser" path raised outside the per-entry try and stopped the whole run
+2026-10-13 | F25 | reviewer | MINOR | duplicate bench names compared case-sensitively; Windows folders are not
+2026-10-13 | F25 | reviewer | MINOR | run id not reserved up front; an explicit run_id could overwrite an earlier run file
+2026-10-13 | F25 | reviewer | MINOR | a retry after a failed highlight attempt dropped the failed attempt's tokens
+2026-10-13 | F25 | reviewer | MINOR | cost priced all cache writes at the 5-minute rate and ignored inference_geo
+2026-10-13 | F25 | reviewer | MINOR | git status could take .git/index.lock; bench run exit codes 0/1 untested; report created a missing bench folder; 0- vs 1-based entry numbers
+2026-10-13 | F25 | reviewer | MAJOR | round 2: malformed prior highlight_usage.json (non-numeric attempts, non-list geo) failed the retry inside the except block
+2026-10-13 | F25 | reviewer | MAJOR | round 3: OverflowError (1e400/Infinity) and RecursionError (deep nesting) still escaped the usage fallback; now catches Exception (metric only)

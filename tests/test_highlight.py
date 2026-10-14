@@ -559,6 +559,7 @@ def test_failed_attempt_tokens_carried_into_retry(transcribed_job, tmp_path):
 
 @pytest.mark.parametrize("damage", [
     {"attempts": "x"}, {"inference_geo": 5}, {"input_tokens": "lots"},
+    {"input_tokens": 1e400}, {"attempts": float("inf")},
 ])
 def test_malformed_failed_attempt_usage_never_fails_retry(
         transcribed_job, tmp_path, capsys, damage):
@@ -584,3 +585,22 @@ def test_malformed_failed_attempt_usage_never_fails_retry(
     assert m.stage == Stage.CANDIDATES_READY and m.failed_stage is None
     assert json.loads(path.read_text(encoding="utf-8"))["attempts"] == 1
     assert "ignored a malformed" in capsys.readouterr().err
+
+
+def test_unreadable_failed_attempt_usage_never_fails_retry(
+        transcribed_job, tmp_path, capsys):
+    class SpendsThenFails(MockHighlighter):
+        def analyze_chunk(self, chunk, source_duration):
+            raise RuntimeError("boom")
+
+    job = _stage_job(transcribed_job, tmp_path)
+    with pytest.raises(RuntimeError):
+        highlight_job(job, SpendsThenFails(), force=True)
+    # nested deeply enough to make the JSON parser give up
+    (job / USAGE_NAME).write_text("[" * 200_000 + "]" * 200_000,
+                                  encoding="utf-8")
+    m = highlight_job(job, MockHighlighter(), force=True)
+    assert m.stage == Stage.CANDIDATES_READY and m.failed_stage is None
+    assert json.loads((job / USAGE_NAME).read_text(encoding="utf-8")
+                      )["attempts"] == 1
+    assert "ignored an unreadable" in capsys.readouterr().err
