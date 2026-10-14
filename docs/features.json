@@ -588,7 +588,8 @@
         "The highlight stage writes highlight_usage.json (model, calls, input/output/cache-write/cache-read tokens) summed over every chunk. MockHighlighter records its calls with zero tokens. Failing to write the file never fails the stage (tests with a fake client whose replies carry usage; field names checked against the real SDK's Usage model)",
         "Cost comes from a per-model price table (USD per million tokens, dated, with its source URL). An unknown model gives a blank cost, never a guess (test)",
         "`clipforge bench report` rebuilds results.csv from every run file, adding reviewed/approved/approval rate from each job's reviews.json. Running it twice gives byte-identical output, and it prints the latest run against the previous one per video (test)",
-        "Tests use temp folders only; no video or bench output is ever written inside the repo"
+        "The bench tests use temp folders only and never touch the real home folder, workspace or .env (the highlight tests keep reusing the existing git-ignored tests/fixtures/speech_30s.mp4)",
+        "A results.csv held open by another program (Excel on Windows) never loses a run: run files are saved, the command prints how to retry and exits 3; partial runs (--only) compare each video with its last earlier run (tests)"
       ],
       "passes": false,
       "notes": "Bench videos and results live in Diego's bench folder, not in git (they may carry client names). The usage log is the first piece of F34."

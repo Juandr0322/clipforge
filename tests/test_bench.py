@@ -134,14 +134,15 @@ def test_compare_latest_against_previous_run(bench_run, tmp_path):
     b = tmp_path / "bench"
     shutil.copytree(bench_run["bench"], b)
     r2 = json.loads((b / "runs" / "r1.json").read_text(encoding="utf-8"))
-    r2["run_id"] = "r2"
+    r2["run_id"], r2["started_at"] = "r2", "2999-01-01T00:00:00+00:00"
     for v in r2["videos"]:
         if v["name"] == "talk1":
             v["clips"], v["cost_usd"] = 3, 0.25
     (b / "runs" / "r2.json").write_text(json.dumps(r2), encoding="utf-8")
     lines = bench.compare_latest(bench.build_rows(b, bench_run["ws"]))
-    assert lines[0] == "Latest run r2 vs previous r1"
+    assert lines[0] == "Latest run r2; each video vs its last earlier run"
     (talk,) = [ln for ln in lines if "talk1" in ln]
+    assert "(vs r1)" in talk
     clips_before = _row(bench_run["record"], "talk1")["clips"]
     assert f"clips {clips_before} -> 3" in talk
     assert "cost $0.0000 -> $0.2500" in talk
@@ -184,6 +185,9 @@ def test_run_ids_never_overwrite(tmp_path):
     ([{"name": "a", "type": "vlog", "file": "a.mp4"}], "unknown type 'vlog'"),
     ([{"name": "a", "type": "talk", "file": "a.mp4"},
       {"name": "a", "type": "talk", "file": "b.mp4"}], "entry 2 ('a'): duplicate"),
+    ([{"name": "Podcast", "type": "talk", "file": "a.mp4"},
+      {"name": "podcast", "type": "talk", "file": "b.mp4"}],
+     "entry 2 ('podcast'): duplicate name (names are compared ignoring case)"),
     ([{"name": "../x", "type": "talk", "file": "a.mp4"}], "entry 1 ('../x'): name"),
     ([{"name": "x" * 41, "type": "talk", "file": "a.mp4"}], "at most 40"),
     ([{"name": "a", "type": "talk", "file": "a.mp4", "files": ["b.mp4"]}],
@@ -191,7 +195,7 @@ def test_run_ids_never_overwrite(tmp_path):
     ([{"name": "a", "type": "talk"}], "exactly one of 'file' or 'files'"),
     ([{"name": "a", "type": "day_in_life", "files": []}], "'files' is empty"),
     ([{"name": "a", "type": "talk", "file": "a.mp4", "colour": "red"}],
-     "videos.0.colour"),
+     "bench.json entry 1, colour"),
     ([], "lists no videos"),
 ])
 def test_bad_config_refused(tmp_path, videos, message):
@@ -290,3 +294,149 @@ def test_cli_uses_env_bench_dir(monkeypatch, tmp_path):
     monkeypatch.setenv(bench.BENCH_ENV, str(tmp_path / "from-env"))
     assert _cli(monkeypatch, "bench", "init") == 0
     assert (tmp_path / "from-env" / "bench.json").is_file()
+
+
+# ------------------------------------------------- review fixes (F25 round 2)
+
+def _run_file(b: Path, run_id: str, started: str, videos: list[dict]) -> None:
+    (b / "runs").mkdir(parents=True, exist_ok=True)
+    (b / "runs" / f"{run_id}.json").write_text(json.dumps({
+        "run_id": run_id, "started_at": started, "engines": {},
+        "videos": videos}), encoding="utf-8")
+
+
+def _v(name, clips):
+    return {"name": name, "type": "talk", "status": "ok", "clips": clips}
+
+
+def test_partial_runs_compare_each_video_with_its_last_run(tmp_path):
+    b = tmp_path / "bench"
+    _run_file(b, "A", "2026-10-01T00:00:00+00:00",
+              [_v("podcast", 1), _v("gaming", 6)])
+    _run_file(b, "B", "2026-10-02T00:00:00+00:00", [_v("podcast", 2)])
+    _run_file(b, "C", "2026-10-03T00:00:00+00:00", [_v("gaming", 9)])
+    lines = bench.compare_latest(bench.build_rows(b, tmp_path / "ws"))
+    (gaming,) = [ln for ln in lines if "gaming" in ln]
+    assert "(vs A)" in gaming and "clips 6 -> 9" in gaming
+
+
+def test_runs_ordered_by_start_time_not_id(tmp_path):
+    b = tmp_path / "bench"
+    _run_file(b, "20261013-101500-9", "2026-10-13T14:15:00.1+00:00",
+              [_v("podcast", 1)])
+    _run_file(b, "20261013-101500-10", "2026-10-13T14:15:00.2+00:00",
+              [_v("podcast", 2)])
+    lines = bench.compare_latest(bench.build_rows(b, tmp_path / "ws"))
+    assert lines[0].startswith("Latest run 20261013-101500-10;")
+    assert "clips 1 -> 2" in lines[1]
+
+
+def test_reused_run_id_is_refused_and_never_overwritten(tmp_path):
+    b = tmp_path / "bench"
+    _write_config(b, [ENTRIES[0]])            # only a missing file: no pipeline
+    bench.run_bench(b, tmp_path / "ws", MOCK_CFG, progress=lambda m: None,
+                    run_id="same")
+    before = (b / "runs" / "same.json").read_bytes()
+    with pytest.raises(bench.BenchConfigError, match="already used"):
+        bench.run_bench(b, tmp_path / "ws", MOCK_CFG, progress=lambda m: None,
+                        run_id="same")
+    assert (b / "runs" / "same.json").read_bytes() == before
+
+
+def test_bad_path_entry_does_not_stop_the_run(tmp_path):
+    b = tmp_path / "bench"
+    _write_config(b, [
+        {"name": "weird", "type": "talk", "file": "~nosuchuser-cf25/x.mp4"},
+        ENTRIES[3]])
+    rec = bench.run_bench(b, tmp_path / "ws", MOCK_CFG, progress=lambda m: None,
+                          run_id="r1")
+    status = {v["name"]: v["status"] for v in rec["videos"]}
+    assert status["weird"] in ("failed", "missing")   # Windows may resolve it
+    assert status["multi"] == "skipped"
+
+
+def _lock_results(monkeypatch):
+    real = bench._replace_with_retry
+
+    def locked(tmp, dest):
+        if Path(dest).name == bench.RESULTS_NAME:
+            raise PermissionError(13, "file is open in another program")
+        return real(tmp, dest)
+    monkeypatch.setattr(bench, "_replace_with_retry", locked)
+
+
+def test_locked_results_csv_keeps_the_run(monkeypatch, tmp_path):
+    b = tmp_path / "bench"
+    _write_config(b, [ENTRIES[0]])
+    _lock_results(monkeypatch)
+    rec = bench.run_bench(b, tmp_path / "ws", MOCK_CFG, progress=lambda m: None,
+                          run_id="r1")
+    assert rec["results_error"]
+    assert json.loads((b / "runs" / "r1.json").read_text(encoding="utf-8")
+                      )["finished_at"]
+    assert not list(b.glob(".*.tmp"))
+
+
+def test_cli_locked_results_exit_code(monkeypatch, tmp_path, capsys):
+    b = tmp_path / "bench"
+    _write_config(b, [ENTRIES[0]])
+    _lock_results(monkeypatch)
+    args = ("--bench-dir", str(b), "--workspace", str(tmp_path / "ws"))
+    assert _cli(monkeypatch, "bench", "run", *args) == bench.EXIT_RESULTS_LOCKED
+    assert "open in Excel" in capsys.readouterr().err
+    assert _cli(monkeypatch, "bench", "report", *args) == \
+        bench.EXIT_RESULTS_LOCKED
+    assert "open in Excel" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("entry, code", [
+    (ENTRIES[0], bench.EXIT_VIDEO_PROBLEM),    # missing file
+    (ENTRIES[3], bench.EXIT_OK),               # skipped multi-file entry
+])
+def test_cli_run_exit_codes(monkeypatch, tmp_path, entry, code):
+    b = tmp_path / "bench"
+    _write_config(b, [entry])
+    assert _cli(monkeypatch, "bench", "run", "--bench-dir", str(b),
+                "--workspace", str(tmp_path / "ws")) == code
+
+
+def test_cli_report_without_bench_folder(monkeypatch, tmp_path, capsys):
+    b = tmp_path / "nothing-here"
+    assert _cli(monkeypatch, "bench", "report", "--bench-dir", str(b),
+                "--workspace", str(tmp_path / "ws")) == bench.EXIT_SETUP
+    assert "bench init" in capsys.readouterr().err
+    assert not b.exists()
+
+
+def test_git_status_takes_no_index_lock(monkeypatch):
+    seen = []
+
+    def fake_run(cmd, **kw):
+        seen.append(cmd)
+        out = "" if "status" in cmd else "abc123\n"     # clean tree
+        return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+    monkeypatch.setattr(bench.subprocess, "run", fake_run)
+    assert bench.git_commit() == "abc123"
+    (status,) = [c for c in seen if "status" in c]
+    assert status[:2] == ["git", "--no-optional-locks"]
+
+
+def test_cost_one_hour_cache_writes():
+    usage = {"engine": "anthropic/claude-sonnet-5-5",
+             "model": "claude-sonnet-5-5",
+             "cache_creation_input_tokens": 1_000_000,
+             "cache_write_1h_tokens": 400_000}
+    # 0.6M at the 5-minute price 2.50 + 0.4M at the 1-hour price 4.00
+    assert bench.cost_usd(usage) == pytest.approx(1.50 + 1.60)
+
+
+@pytest.mark.parametrize("geos, expected", [
+    ([], 2.00), (["global"], 2.00), (["us"], 2.20),
+    (["global", "us"], None), (["eu-somewhere"], None),
+])
+def test_cost_inference_geo(geos, expected):
+    usage = {"engine": "anthropic/claude-sonnet-5-5",
+             "model": "claude-sonnet-5-5", "input_tokens": 1_000_000,
+             "inference_geo": geos}
+    got = bench.cost_usd(usage)
+    assert got == (pytest.approx(expected) if expected is not None else None)

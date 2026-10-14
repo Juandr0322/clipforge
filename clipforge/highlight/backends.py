@@ -157,7 +157,12 @@ class Highlighter(abc.ABC):
         """One transcript chunk -> sanitized candidate dicts."""
 
     def reset_usage(self) -> None:
-        self.usage = {"calls": 0, **{f: 0 for f in USAGE_FIELDS}}
+        self.usage = {"calls": 0, **{f: 0 for f in USAGE_FIELDS},
+                      # the 1-hour share of cache_creation_input_tokens
+                      "cache_write_1h_tokens": 0,
+                      # every inference_geo the API reported (it can change
+                      # the price)
+                      "inference_geo": []}
 
     def add_usage(self, usage) -> None:
         """Add one reply's token counts. Missing or None fields count as 0."""
@@ -165,6 +170,13 @@ class Highlighter(abc.ABC):
             self.reset_usage()
         for f in USAGE_FIELDS:
             self.usage[f] += int(getattr(usage, f, None) or 0)
+        split = getattr(usage, "cache_creation", None)
+        self.usage["cache_write_1h_tokens"] += int(
+            getattr(split, "ephemeral_1h_input_tokens", None) or 0)
+        geo = getattr(usage, "inference_geo", None)
+        if geo and geo not in self.usage["inference_geo"]:
+            self.usage["inference_geo"] = sorted(
+                [*self.usage["inference_geo"], geo])
 
     def usage_record(self) -> dict:
         """What the stage writes to highlight_usage.json."""

@@ -34,6 +34,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from clipforge.common.manifest import Manifest, is_safe_job_id
 from clipforge.highlight.backends import USAGE_NAME
+from clipforge.review.store import _replace_with_retry
 
 BENCH_ENV = "CLIPFORGE_BENCH_DIR"
 DEFAULT_BENCH_DIR = Path.home() / "clipforge-bench"
@@ -48,18 +49,30 @@ CONTENT_TYPES = ("talk", "gaming", "storytime", "talking_head", "cinematic",
                  "day_in_life")
 MAX_NAME_LEN = 40
 
-# USD per million tokens: (input, output, 5-minute cache write, cache read).
+# USD per million tokens:
+#   (input, output, 5-minute cache write, 1-hour cache write, cache read).
 # Source: https://platform.claude.com/docs/en/about-claude/pricing
 # Checked 2026-10-13. Standard (not batch) prices. Haiku 5.5 is its tier for
 # prompts up to 100K tokens; a highlight chunk is far below that.
 PRICES_CHECKED = "2026-10-13"
-PRICES: dict[str, tuple[float, float, float, float]] = {
-    "claude-sonnet-4-6": (3.00, 15.00, 3.75, 0.30),
-    "claude-sonnet-5-5": (2.00, 10.00, 2.50, 0.10),
-    "claude-haiku-4-5": (1.00, 5.00, 1.25, 0.10),
-    "claude-haiku-5-5": (0.10, 0.50, 0.125, 0.01),
-    "claude-opus-5-5": (4.00, 20.00, 5.00, 0.20),
+PRICES: dict[str, tuple[float, float, float, float, float]] = {
+    "claude-sonnet-4-6": (3.00, 15.00, 3.75, 6.00, 0.30),
+    "claude-sonnet-5-5": (2.00, 10.00, 2.50, 4.00, 0.10),
+    "claude-haiku-4-5": (1.00, 5.00, 1.25, 2.00, 0.10),
+    "claude-haiku-5-5": (0.10, 0.50, 0.125, 0.20, 0.01),
+    "claude-opus-5-5": (4.00, 20.00, 5.00, 8.00, 0.20),
 }
+# US-only inference (inference_geo "us") costs 1.1x on Claude 4.6 and later.
+US_GEO_MULTIPLIER = 1.1
+US_GEO_MODELS = {"claude-sonnet-4-6", "claude-sonnet-5-5", "claude-haiku-5-5",
+                 "claude-opus-5-5"}
+STANDARD_GEOS = {"global"}
+
+# `clipforge bench` exit codes
+EXIT_OK, EXIT_VIDEO_PROBLEM, EXIT_SETUP, EXIT_RESULTS_LOCKED = 0, 1, 2, 3
+RESULTS_LOCKED_HINT = (f"Could not update {RESULTS_NAME}: is it open in Excel "
+                       "or another program? Close it, then run "
+                       "`python -m clipforge.cli bench report`.")
 
 # Stage names as recorded in manifest.history, in pipeline order.
 STAGE_COLUMNS = ("ingested", "transcribed", "candidates_ready", "refined",
@@ -114,7 +127,12 @@ Commands (run from the clipforge folder):
                                           the last two runs
 
 After a run, review the bench-<run>-<name> jobs on the review website, then
-run `bench report` again so results.csv picks up your approvals.
+run `bench report` again so results.csv picks up your approvals. Each video
+is compared with the last earlier run that included it.
+
+Exit codes: 0 all good, 1 a video failed or is missing, 2 setup problem
+(bench.json, ffmpeg, no bench folder), 3 results.csv is open in another
+program (close it and run `bench report`).
 """
 
 
@@ -145,15 +163,15 @@ def resolve_bench_dir(arg: str | os.PathLike | None = None) -> Path:
 
 
 def _write_atomic(dest: Path, text: str) -> None:
+    """Temp file + rename, retried while Windows has dest open briefly."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.parent / f".{dest.name}.{uuid.uuid4().hex}.tmp"
     try:
         with tmp.open("w", encoding="utf-8", newline="") as f:
             f.write(text)
-        os.replace(tmp, dest)
+        _replace_with_retry(tmp, dest)
     finally:
-        if tmp.exists():
-            tmp.unlink()
+        tmp.unlink(missing_ok=True)
 
 
 def _short(err: BaseException | str, limit: int = 200) -> str:
@@ -171,8 +189,9 @@ def git_commit() -> str | None:
             capture_output=True, text=True, encoding="utf-8", timeout=10)
         if head.returncode != 0:
             return None
-        dirty = subprocess.run(
-            ["git", "status", "--porcelain", "--untracked-files=no"],
+        dirty = subprocess.run(   # --no-optional-locks: never touch .git/index
+            ["git", "--no-optional-locks", "status", "--porcelain",
+             "--untracked-files=no"],
             cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8",
             timeout=10)
         suffix = "+dirty" if dirty.returncode == 0 and dirty.stdout.strip() \
@@ -183,20 +202,32 @@ def git_commit() -> str | None:
 
 
 def cost_usd(usage: dict | None) -> float | None:
-    """$ for one highlight run. Mock engines cost 0; an unknown model gives
-    None (blank), never a guess."""
+    """$ for one highlight run. Mock engines cost 0. Anything we can't price
+    exactly (unknown model, unknown or mixed inference_geo) gives None
+    (blank), never a guess."""
     if not usage:
         return None
     if usage.get("engine") == "mock":
         return 0.0
-    price = PRICES.get(usage.get("model") or "")
+    model = usage.get("model") or ""
+    price = PRICES.get(model)
     if price is None:
         return None
-    p_in, p_out, p_write, p_read = price
-    total = (usage.get("input_tokens", 0) * p_in
-             + usage.get("output_tokens", 0) * p_out
-             + usage.get("cache_creation_input_tokens", 0) * p_write
-             + usage.get("cache_read_input_tokens", 0) * p_read) / 1e6
+    geos = set(usage.get("inference_geo") or [])
+    if geos - STANDARD_GEOS - {"us"} or (len(geos) > 1 and "us" in geos):
+        return None           # an unknown geo, or a mix we can't split
+    p_in, p_out, p_write_5m, p_write_1h, p_read = price
+
+    def n(key: str) -> int:
+        return int(usage.get(key) or 0)
+
+    write_1h = n("cache_write_1h_tokens")
+    write_5m = max(n("cache_creation_input_tokens") - write_1h, 0)
+    total = (n("input_tokens") * p_in + n("output_tokens") * p_out
+             + write_5m * p_write_5m + write_1h * p_write_1h
+             + n("cache_read_input_tokens") * p_read) / 1e6
+    if "us" in geos and model in US_GEO_MODELS:
+        total *= US_GEO_MULTIPLIER
     return round(total, 4)
 
 
@@ -231,8 +262,13 @@ def load_config(bench_dir: Path) -> BenchConfig:
         conf = BenchConfig.model_validate(raw)
     except ValidationError as e:
         first = e.errors()[0]
-        where = ".".join(str(x) for x in first["loc"])
-        raise BenchConfigError(f"{CONFIG_NAME}: {where}: {first['msg']}")
+        loc = list(first["loc"])
+        if len(loc) >= 2 and loc[0] == "videos" and isinstance(loc[1], int):
+            # same 1-based numbering as the checks below
+            where = f"entry {loc[1] + 1}" + "".join(f", {x}" for x in loc[2:])
+        else:
+            where = ".".join(str(x) for x in loc)
+        raise BenchConfigError(f"{CONFIG_NAME} {where}: {first['msg']}")
 
     if not conf.videos:
         raise BenchConfigError(f"{CONFIG_NAME} lists no videos")
@@ -244,9 +280,12 @@ def load_config(bench_dir: Path) -> BenchConfig:
                 f"{label}: name must be letters, digits, '-' and '_', "
                 f"start with a letter or digit, and be at most "
                 f"{MAX_NAME_LEN} characters")
-        if e.name in seen:
-            raise BenchConfigError(f"{label}: duplicate name")
-        seen.add(e.name)
+        # Windows folders ignore case: "Podcast" and "podcast" would share
+        # one job folder
+        if e.name.casefold() in seen:
+            raise BenchConfigError(
+                f"{label}: duplicate name (names are compared ignoring case)")
+        seen.add(e.name.casefold())
         if e.type not in CONTENT_TYPES:
             raise BenchConfigError(
                 f"{label}: unknown type {e.type!r}; use one of "
@@ -315,10 +354,16 @@ def _run_entry(e: BenchEntry, bench_dir: Path, workspace: Path, run_id: str,
         row["status"] = "skipped"
         row["error"] = "multi-file entries need multi-file editing (F35)"
         return row
-    src = Path(e.file).expanduser()
-    if not src.is_absolute():
-        src = bench_dir / src
-    if not src.is_file():
+    try:
+        src = Path(e.file).expanduser()     # "~nosuchuser/x" raises
+        if not src.is_absolute():
+            src = bench_dir / src
+        found = src.is_file()
+    except (RuntimeError, OSError, ValueError) as ex:
+        row["status"] = "failed"
+        row["error"] = f"bad file path {e.file!r}: {_short(ex)}"
+        return row
+    if not found:
         row["status"] = "missing"
         row["error"] = f"file not found: {e.file}"
         return row
@@ -362,7 +407,6 @@ def run_bench(bench_dir: Path, workspace: Path, cfg,
     if not is_safe_job_id(run_id):
         raise BenchConfigError(f"invalid run id {run_id!r}")
     resolved = cfg.resolve()
-    workspace.mkdir(parents=True, exist_ok=True)
     record = {
         "run_id": run_id,
         "started_at": datetime.now(timezone.utc).isoformat(),
@@ -375,13 +419,23 @@ def run_bench(bench_dir: Path, workspace: Path, cfg,
         "videos": [],
     }
     out = runs_dir / f"{run_id}.json"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    try:   # reserve the id: an earlier run's file is never overwritten
+        with out.open("x", encoding="utf-8") as f:
+            f.write(json.dumps(record, indent=2) + "\n")
+    except FileExistsError:
+        raise BenchConfigError(f"run id {run_id!r} was already used")
+    workspace.mkdir(parents=True, exist_ok=True)
     for e in entries:
         record["videos"].append(
             _run_entry(e, bench_dir, workspace, run_id, resolved, progress))
         _write_atomic(out, json.dumps(record, indent=2) + "\n")  # keep partials
     record["finished_at"] = datetime.now(timezone.utc).isoformat()
     _write_atomic(out, json.dumps(record, indent=2) + "\n")
-    write_results(bench_dir, workspace)
+    try:
+        write_results(bench_dir, workspace)
+    except OSError as ex:   # e.g. results.csv open in Excel; the run is saved
+        record["results_error"] = _short(ex)
     return record
 
 
@@ -394,7 +448,10 @@ def _load_runs(bench_dir: Path) -> list[dict]:
             runs.append(json.loads(p.read_text(encoding="utf-8")))
         except (OSError, ValueError):
             continue
-    runs.sort(key=lambda r: str(r.get("run_id", "")))
+    # Oldest first by the UTC start time: run ids are local time and their
+    # "-2", "-10" suffixes don't sort as numbers.
+    runs.sort(key=lambda r: (str(r.get("started_at") or ""),
+                             str(r.get("run_id", ""))))
     return runs
 
 
@@ -474,21 +531,25 @@ def _fmt(v, kind: str) -> str:
 
 
 def compare_latest(rows: list[dict]) -> list[str]:
-    """Lines comparing the latest run with the previous one, per video."""
-    run_ids = sorted({r["run_id"] for r in rows if r.get("run_id")})
-    if not run_ids:
+    """Lines comparing each video in the latest run with the last earlier
+    run that included it (partial runs with --only are common).
+    `rows` must be in run order, as build_rows returns them."""
+    order: list[str] = []
+    for r in rows:
+        if r.get("run_id") and r["run_id"] not in order:
+            order.append(r["run_id"])
+    if not order:
         return ["No benchmark runs yet: run `bench run` first."]
-    latest = run_ids[-1]
-    prev = run_ids[-2] if len(run_ids) > 1 else None
-    by_key = {(r["run_id"], r["video"]): r for r in rows}
-    head = f"Latest run {latest}" + (f" vs previous {prev}" if prev else
-                                     " (no earlier run to compare)")
-    lines = [head]
+    latest = order[-1]
+    rank = {run_id: i for i, run_id in enumerate(order)}
+    lines = [f"Latest run {latest}; each video vs its last earlier run"]
     fields = (("status", "status", "str"), ("clips", "clips", "str"),
               ("approval_rate", "approved", "pct"),
               ("process_min", "time", "min"), ("cost_usd", "cost", "usd"))
     for r in [r for r in rows if r["run_id"] == latest]:
-        before = by_key.get((prev, r["video"])) if prev else None
+        earlier = [x for x in rows if x["video"] == r["video"]
+                   and rank.get(x.get("run_id"), len(order)) < rank[latest]]
+        before = earlier[-1] if earlier else None
         parts = []
         for key, label, kind in fields:
             now = _fmt(r.get(key), kind)
@@ -496,5 +557,6 @@ def compare_latest(rows: list[dict]) -> list[str]:
                 parts.append(f"{label} {_fmt(before.get(key), kind)} -> {now}")
             else:
                 parts.append(f"{label} {now}")
-        lines.append(f"  {r['video']:<14} " + " | ".join(parts))
+        vs = f"vs {before['run_id']}" if before else "first run"
+        lines.append(f"  {r['video']:<14} ({vs}) " + " | ".join(parts))
     return lines

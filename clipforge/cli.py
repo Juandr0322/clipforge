@@ -412,18 +412,27 @@ def run_bench_command(args) -> int:
         return 0
 
     workspace = Path(args.workspace)
+    if not bench_dir.is_dir():
+        print(f"BENCH FAILED: no bench folder at {bench_dir}: run "
+              "`python -m clipforge.cli bench init` first", file=sys.stderr)
+        return bench.EXIT_SETUP
+
     if args.action == "report":
-        bench.write_results(bench_dir, workspace)
         rows = bench.build_rows(bench_dir, workspace)
         print("\n".join(bench.compare_latest(rows)))
+        try:
+            bench.write_results(bench_dir, workspace)
+        except OSError:
+            print(bench.RESULTS_LOCKED_HINT, file=sys.stderr)
+            return bench.EXIT_RESULTS_LOCKED
         print(f"results: {bench_dir / bench.RESULTS_NAME}")
-        return 0
+        return bench.EXIT_OK
 
     # run
     problem = ffmpeg_problem()
     if problem:
         print(f"BENCH FAILED: {problem}", file=sys.stderr)
-        return 2
+        return bench.EXIT_SETUP
     report_ffmpeg()
     from clipforge.pipeline import PipelineConfig
     try:
@@ -431,14 +440,17 @@ def run_bench_command(args) -> int:
                                  only=args.only)
     except bench.BenchConfigError as e:
         print(f"BENCH FAILED: {e}", file=sys.stderr)
-        return 2
+        return bench.EXIT_SETUP
     rows = bench.build_rows(bench_dir, workspace)
     print("\n".join(bench.compare_latest(rows)))
     print(f"run file: {bench_dir / bench.RUNS_DIR / (record['run_id'] + '.json')}")
     print("Review the bench jobs on the review website, then run "
           "`bench report` to add approval rates.")
+    if record.get("results_error"):
+        print(bench.RESULTS_LOCKED_HINT, file=sys.stderr)
+        return bench.EXIT_RESULTS_LOCKED
     bad = [v for v in record["videos"] if v["status"] in ("failed", "missing")]
-    return 1 if bad else 0
+    return bench.EXIT_VIDEO_PROBLEM if bad else bench.EXIT_OK
 
 
 if __name__ == "__main__":

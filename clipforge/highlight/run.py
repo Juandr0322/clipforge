@@ -15,13 +15,46 @@ from pathlib import Path
 
 from clipforge.common.manifest import Manifest, Stage
 from clipforge.highlight.backends import (
-    RAW_REPLY_GLOB, USAGE_NAME, Highlighter,
+    RAW_REPLY_GLOB, USAGE_FIELDS, USAGE_NAME, Highlighter,
 )
 from clipforge.transcribe.schema import Transcript
+
+# Counters added together when a retry follows a failed attempt.
+_SUMMED = ("calls", *USAGE_FIELDS, "cache_write_1h_tokens")
 
 
 class HighlightError(Exception):
     pass
+
+
+def _failed_attempt_usage(job_dir: Path, m: Manifest) -> dict | None:
+    """Tokens spent by earlier attempts that failed, so a retry keeps
+    counting them. A forced re-run after a success starts from zero."""
+    if m.failed_stage != Stage.CANDIDATES_READY:
+        return None
+    try:
+        prior = json.loads((job_dir / USAGE_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return prior if isinstance(prior, dict) else None
+
+
+def merge_usage(record: dict, prior: dict | None) -> dict:
+    """record + prior when both used the same model; `attempts` counts the
+    runs whose tokens are in the totals."""
+    if not prior or prior.get("model") != record.get("model"):
+        return {**record, "attempts": 1}
+    merged = dict(record)
+    for f in _SUMMED:
+        try:
+            merged[f] = int(record.get(f) or 0) + int(prior.get(f) or 0)
+        except (TypeError, ValueError):
+            pass
+    merged["inference_geo"] = sorted(
+        set(record.get("inference_geo") or []) |
+        set(prior.get("inference_geo") or []))
+    merged["attempts"] = int(prior.get("attempts") or 1) + 1
+    return merged
 
 
 def _remove_quietly(path: Path) -> None:
@@ -68,16 +101,18 @@ def highlight_job(job_dir: str | Path, highlighter: Highlighter,
 
     started = datetime.now(timezone.utc)
     highlighter.usage = None      # no carry-over from another job
+    prior = _failed_attempt_usage(job_dir, m)
     try:
         t = Transcript.load(job_dir / m.transcript_path)
-        # raw replies and usage from a previous (forced) run would mislead
+        # raw replies and usage from a previous (forced) run would mislead;
+        # tokens from failed attempts are kept in `prior`
         for stale in job_dir.glob(RAW_REPLY_GLOB):
             _remove_quietly(stale)
         _remove_quietly(job_dir / USAGE_NAME)
         highlighter.debug_dir = job_dir
         cset = highlighter.find_highlights(
             t, min_score=min_score, max_candidates=max_candidates)
-        write_usage(job_dir, highlighter.usage_record())
+        write_usage(job_dir, merge_usage(highlighter.usage_record(), prior))
 
         # Post-condition: it's VALID for a video to yield zero candidates
         # (the prompt says don't invent weak ones), but we record it loudly.
@@ -87,7 +122,8 @@ def highlight_job(job_dir: str | Path, highlighter: Highlighter,
         m.record(Stage.CANDIDATES_READY, started, ok=True)
     except Exception as e:  # noqa: BLE001
         if highlighter.usage is not None:   # tokens already spent still count
-            write_usage(job_dir, highlighter.usage_record())
+            write_usage(job_dir,
+                        merge_usage(highlighter.usage_record(), prior))
         m.record(Stage.CANDIDATES_READY, started, ok=False, error=str(e))
         m.save(job_dir)
         raise

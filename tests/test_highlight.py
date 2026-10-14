@@ -509,3 +509,49 @@ def test_usage_kept_when_stage_fails(transcribed_job, tmp_path):
     rec = json.loads((job / USAGE_NAME).read_text(encoding="utf-8"))
     assert rec["input_tokens"] == 7 and rec["output_tokens"] == 3
     assert Manifest.load(job).failed_stage == Stage.CANDIDATES_READY
+
+
+def test_usage_records_one_hour_writes_and_geo():
+    split = types.SimpleNamespace(ephemeral_1h_input_tokens=40,
+                                  ephemeral_5m_input_tokens=60)
+    usage = types.SimpleNamespace(
+        input_tokens=1, output_tokens=1, cache_creation_input_tokens=100,
+        cache_read_input_tokens=0, cache_creation=split, inference_geo="us")
+    h = AnthropicHighlighter(client=FakeClient([GOOD], usage=usage))
+    h.analyze_chunk(_chunk(), 100.0)
+    h.analyze_chunk(_chunk(), 100.0)
+    rec = h.usage_record()
+    assert rec["cache_creation_input_tokens"] == 200
+    assert rec["cache_write_1h_tokens"] == 80
+    assert rec["inference_geo"] == ["us"]
+
+
+def test_split_and_geo_fields_match_real_sdk():
+    from anthropic.types import CacheCreation, Usage
+    assert {"cache_creation", "inference_geo"} <= set(Usage.model_fields)
+    assert "ephemeral_1h_input_tokens" in CacheCreation.model_fields
+
+
+def test_failed_attempt_tokens_carried_into_retry(transcribed_job, tmp_path):
+    class SpendsThenFails(MockHighlighter):
+        def analyze_chunk(self, chunk, source_duration):
+            self.add_usage(_usage(input_tokens=7, output_tokens=3))
+            raise RuntimeError("model fell over")
+
+    class Spends(MockHighlighter):
+        def analyze_chunk(self, chunk, source_duration):
+            self.add_usage(_usage(input_tokens=10, output_tokens=1))
+            return super().analyze_chunk(chunk, source_duration)
+
+    job = _stage_job(transcribed_job, tmp_path)
+    with pytest.raises(RuntimeError):
+        highlight_job(job, SpendsThenFails(), force=True)
+    m = highlight_job(job, Spends(), force=True)       # the retry succeeds
+    assert m.stage == Stage.CANDIDATES_READY and m.failed_stage is None
+    rec = json.loads((job / USAGE_NAME).read_text(encoding="utf-8"))
+    assert rec["input_tokens"] == 7 + 10 * rec["calls"] - 10   # 1 failed call
+    assert rec["attempts"] == 2
+
+    highlight_job(job, Spends(), force=True)   # forced redo after a success
+    rec = json.loads((job / USAGE_NAME).read_text(encoding="utf-8"))
+    assert rec["attempts"] == 1 and rec["input_tokens"] == 10 * rec["calls"]
