@@ -17,7 +17,8 @@ from pathlib import Path
 
 from clipforge.highlight.chunker import Chunk, chunk_transcript
 from clipforge.highlight.schema import (
-    MAX_CLIP_SEC, MIN_CLIP_SEC, CandidateSet, ClipCandidate, dedup,
+    HOOK_TYPES, MAX_CLIP_SEC, MIN_CLIP_SEC, CandidateSet, ClipCandidate,
+    RejectedCandidate, dedup,
 )
 from clipforge.transcribe.schema import Transcript
 
@@ -45,7 +46,20 @@ Respond with ONLY a JSON array (no markdown fences, no commentary). Each \
 element:
 {{"start": <sec>, "end": <sec>, "score": <0-100>, "hook": "<the opening \
 line, verbatim or lightly trimmed>", "reason": "<why this works, one \
-sentence>", "type": "<opinion|story|insight|howto|funny|emotional|other>"}}
+sentence>", "type": "<opinion|story|insight|howto|funny|emotional|other>", \
+"trigger_t": <sec the setup/trigger of the moment begins>, \
+"reaction_peak_t": <sec of the peak reaction or punchline>, \
+"payoff_end_t": <sec the payoff finishes>, \
+"context_setup": "<ONE line: what a viewer must know first>", \
+"hook_type": "<bold_claim|question|story_open|contrarian|number|reveal|\
+emotion|other>", \
+"stranger_check": {{"pass": <true|false>, "reason": "<one sentence>"}}}}
+
+trigger_t <= reaction_peak_t <= payoff_end_t, all inside [start, end].
+Stranger check: imagine a viewer who has never seen this channel or the rest \
+of the video. Can they follow and enjoy the clip? If it needs backstory, \
+inside jokes or earlier context, set pass to false with the reason. Moments \
+that need backstory must be rejected.
 
 Rules:
 - start/end MUST align to segment boundaries from the transcript
@@ -123,12 +137,54 @@ def parse_llm_response(text: str, chunk: Chunk,
             end = start + MAX_CLIP_SEC
         score = max(0, min(100, score))
         ctype = item.get("type", "other")
+        extra = _parse_v2(item, start, end)
         out.append({
             "start": round(start, 3), "end": round(end, 3), "score": score,
             "hook": str(item.get("hook", ""))[:300],
             "reason": str(item.get("reason", ""))[:300],
             "type": ctype if ctype in valid_types else "other",
+            **extra,
         })
+    return out
+
+
+def _num(v):
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    v = float(v)
+    return v if v == v and abs(v) != float("inf") else None
+
+
+def _parse_v2(item: dict, start: float, end: float) -> dict:
+    """Optional v2 fields. Bad values are dropped, never the candidate."""
+    out: dict = {}
+    times = [_num(item.get(k)) for k in
+             ("trigger_t", "reaction_peak_t", "payoff_end_t")]
+    ok = (all(t is not None and start <= t <= end for t in times)
+          and times[0] <= times[1] <= times[2])
+    if ok:
+        out.update(trigger_t=round(times[0], 3),
+                   reaction_peak_t=round(times[1], 3),
+                   payoff_end_t=round(times[2], 3))
+    ctx = item.get("context_setup")
+    if isinstance(ctx, str) and ctx.strip():
+        out["context_setup"] = " ".join(ctx.split("\n")[0].split())[:200] \
+            or None
+        if out["context_setup"] is None:
+            del out["context_setup"]
+    if "hook_type" in item:
+        ht = item["hook_type"]
+        out["hook_type"] = ht if ht in HOOK_TYPES else "other"
+    sc = item.get("stranger_check")
+    passed, reason = True, ""
+    if isinstance(sc, dict):
+        passed = sc.get("pass", sc.get("passed", True)) is not False
+        reason = str(sc.get("reason", ""))
+    elif isinstance(sc, bool):
+        passed = sc
+    if not passed:
+        out["stranger_fail_reason"] = (
+            reason.strip()[:300] or "failed stranger check")
     return out
 
 
@@ -150,8 +206,16 @@ class Highlighter(abc.ABC):
                         max_candidates: int = 12) -> CandidateSet:
         """Full pipeline: chunk -> analyze -> merge -> dedup -> rank."""
         all_raw: list[dict] = []
+        rejected: list[RejectedCandidate] = []
         for chunk in chunk_transcript(t):
-            all_raw.extend(self.analyze_chunk(chunk, t.audio_duration_sec))
+            for d in self.analyze_chunk(chunk, t.audio_duration_sec):
+                why = d.pop("stranger_fail_reason", None)
+                if why is None:
+                    all_raw.append(d)
+                else:
+                    rejected.append(RejectedCandidate(
+                        start=d["start"], end=d["end"], hook=d["hook"],
+                        reason=why))
 
         cands = [ClipCandidate(id=i, **d) for i, d in enumerate(all_raw)]
         cands = [c for c in cands if c.score >= min_score]
@@ -160,6 +224,7 @@ class Highlighter(abc.ABC):
             engine=self.name,
             source_duration_sec=t.audio_duration_sec,
             candidates=cands,
+            rejected=rejected,
         )
 
 
@@ -248,9 +313,16 @@ class MockHighlighter(Highlighter):
             start, end = seg.start, segs[j].end
             if end - start < MIN_CLIP_SEC * 0.6:
                 continue
+            end = min(end, start + MAX_CLIP_SEC)
+            span = end - start
             out.append({
                 "start": round(start, 3),
-                "end": round(min(end, start + MAX_CLIP_SEC), 3),
+                "end": round(end, 3),
+                "trigger_t": round(start + span * 0.1, 3),
+                "reaction_peak_t": round(start + span * 0.6, 3),
+                "payoff_end_t": round(start + span * 0.9, 3),
+                "context_setup": "Standalone moment (mock heuristic).",
+                "hook_type": "bold_claim",
                 "score": min(score, 100),
                 "hook": seg.text[:80],
                 "reason": "keyword-matched hook (mock heuristic)",

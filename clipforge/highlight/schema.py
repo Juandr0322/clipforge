@@ -17,6 +17,10 @@ MAX_CLIP_SEC = 90.0
 ClipType = Literal["opinion", "story", "insight", "howto", "funny",
                    "emotional", "other"]
 
+HookType = Literal["bold_claim", "question", "story_open", "contrarian",
+                   "number", "reveal", "emotion", "other"]
+HOOK_TYPES = frozenset(HookType.__args__)
+
 
 class ClipCandidate(BaseModel):
     id: int
@@ -26,6 +30,12 @@ class ClipCandidate(BaseModel):
     hook: str                            # first-3-seconds hook line
     reason: str                          # why the model picked it
     type: ClipType = "other"
+    # v2, all optional. Absolute seconds, trigger <= peak <= payoff in [start, end].
+    trigger_t: float | None = None
+    reaction_peak_t: float | None = None
+    payoff_end_t: float | None = None
+    context_setup: str | None = None     # one line of needed background
+    hook_type: HookType | None = None
 
     @model_validator(mode="after")
     def _valid(self):
@@ -45,11 +55,20 @@ class ClipCandidate(BaseModel):
         return inter / min(self.duration, other.duration)
 
 
+class RejectedCandidate(BaseModel):
+    """A moment the model found but failed its own stranger check."""
+    start: float
+    end: float
+    hook: str = ""
+    reason: str
+
+
 class CandidateSet(BaseModel):
-    schema_version: int = 1
+    schema_version: int = 2
     engine: str                          # e.g. "anthropic/claude-sonnet-4-6"
     source_duration_sec: float
     candidates: list[ClipCandidate] = Field(default_factory=list)
+    rejected: list[RejectedCandidate] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _invariants(self):

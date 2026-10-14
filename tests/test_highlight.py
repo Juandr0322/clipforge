@@ -6,7 +6,7 @@ import pytest
 
 from clipforge.common.manifest import Manifest, Stage
 from clipforge.highlight.backends import (
-    MockHighlighter, build_system_prompt, get_highlighter, parse_llm_response,
+    Highlighter, MockHighlighter, build_system_prompt, get_highlighter, parse_llm_response,
 )
 from clipforge.highlight.chunker import Chunk, chunk_transcript
 from clipforge.highlight.run import HighlightError, highlight_job
@@ -411,3 +411,104 @@ def test_stale_unlink_failure_does_not_fail_stage(
     err = capsys.readouterr().err
     assert "could not remove highlight_raw_chunk_000.txt" in err
     assert str(tmp_path) not in err
+
+
+# ------------------------------------------------------- F10: v2 fields
+
+V2_FIELDS = ["trigger_t", "reaction_peak_t", "payoff_end_t", "context_setup",
+             "hook_type", "stranger_check"]
+
+
+def _item(**kw):
+    d = {"start": 100, "end": 130, "score": 80, "hook": "h", "reason": "r",
+         "type": "story"}
+    d.update(kw)
+    return json.dumps([d])
+
+
+def _parse(text):
+    return parse_llm_response(text, _chunk(), 3600.0)
+
+
+def test_prompt_names_every_new_field_and_backstory_rule():
+    sp = build_system_prompt()
+    for f in V2_FIELDS:
+        assert f in sp
+    assert "backstory" in sp and "rejected" in sp
+
+
+def test_parse_keeps_valid_v2_fields():
+    (c,) = _parse(_item(trigger_t=105, reaction_peak_t=115, payoff_end_t=125,
+                        context_setup="Host explains the bet.",
+                        hook_type="question"))
+    assert (c["trigger_t"], c["reaction_peak_t"], c["payoff_end_t"]) == (
+        105, 115, 125)
+    assert c["context_setup"] == "Host explains the bet."
+    assert c["hook_type"] == "question"
+
+
+@pytest.mark.parametrize("times", [
+    (120, 110, 125),      # out of order
+    (90, 110, 125),       # before start
+    (105, 115, 140),      # after end
+    (105, "x", 125),      # garbage
+    (105, 115, None),     # missing
+])
+def test_parse_clears_bad_times_keeps_candidate(times):
+    t, p, e = times
+    (c,) = _parse(_item(trigger_t=t, reaction_peak_t=p, payoff_end_t=e))
+    assert c["start"] == 100
+    assert not {"trigger_t", "reaction_peak_t", "payoff_end_t"} & c.keys()
+    ClipCandidate(id=0, **c)
+
+
+def test_parse_unknown_hook_type_and_multiline_context():
+    (c,) = _parse(_item(hook_type="clickbait",
+                        context_setup="line one\nline two\nthree"))
+    assert c["hook_type"] == "other"
+    assert c["context_setup"] == "line one"
+
+
+def test_failed_stranger_check_goes_to_rejected():
+    class H(Highlighter):
+        def analyze_chunk(self, chunk, source_duration):
+            return _parse(json.dumps([
+                {"start": 100, "end": 130, "score": 90, "hook": "bad",
+                 "reason": "r", "stranger_check":
+                 {"pass": False, "reason": "needs the earlier bet"}},
+                {"start": 200, "end": 230, "score": 85, "hook": "good",
+                 "reason": "r", "stranger_check": {"pass": True}},
+            ]))
+    cset = H().find_highlights(make_transcript(duration=600))
+    assert [c.hook for c in cset.candidates] == ["good"]
+    assert len(cset.rejected) == 1
+    assert cset.rejected[0].reason == "needs the earlier bet"
+    assert cset.schema_version == 2
+    again = CandidateSet.model_validate_json(cset.model_dump_json())
+    assert again.rejected[0].hook == "bad"
+
+
+def test_v1_fixture_still_loads():
+    cs = CandidateSet.load(Path(__file__).parent / "fixtures"
+                           / "candidates_v1.json")
+    c = cs.candidates[0]
+    assert cs.rejected == [] and c.trigger_t is None and c.hook_type is None
+
+
+def test_mock_fills_v2_fields_in_order():
+    cset = MockHighlighter().find_highlights(make_transcript(duration=1800))
+    assert cset.candidates
+    for c in cset.candidates:
+        assert c.hook_type == "bold_claim" and c.context_setup
+        assert (c.start <= c.trigger_t <= c.reaction_peak_t
+                <= c.payoff_end_t <= c.end)
+
+
+def test_mock_pipeline_run_writes_v2_candidates(transcribed_job, tmp_path):
+    job = _stage_job(transcribed_job, tmp_path)
+    highlight_job(job, MockHighlighter(), force=True)
+    data = json.loads((job / "candidates.json").read_text(encoding="utf-8"))
+    assert data["schema_version"] == 2
+    for c in data["candidates"]:
+        assert (c["start"] <= c["trigger_t"] <= c["reaction_peak_t"]
+                <= c["payoff_end_t"] <= c["end"])
