@@ -56,14 +56,14 @@ _locks: dict[str, threading.RLock] = {}
 _locks_guard = threading.Lock()
 
 
-def _job_lock(job_dir: Path) -> threading.RLock:
+def job_lock(job_dir: Path) -> threading.RLock:
     key = os.path.abspath(job_dir)
     with _locks_guard:
         return _locks.setdefault(key, threading.RLock())
 
 
 def load_reviews(job_dir: Path) -> ReviewSet:
-    with _job_lock(job_dir):
+    with job_lock(job_dir):
         p = reviews_path(job_dir)
         if not p.exists():
             return ReviewSet()
@@ -74,7 +74,7 @@ REPLACE_ATTEMPTS = 5
 REPLACE_PAUSE_SEC = 0.05
 
 
-def _replace_with_retry(tmp: Path, dest: Path) -> None:
+def replace_with_retry(tmp: Path, dest: Path) -> None:
     """tmp.replace(dest), retrying a few times on PermissionError: Windows
     refuses the rename while another process (an editor, a virus scanner)
     briefly has the destination open."""
@@ -96,10 +96,10 @@ def save_reviews(job_dir: Path, rs: ReviewSet) -> None:
     the new content depends on what is already saved."""
     p = reviews_path(job_dir)
     tmp = p.with_name(f"{p.name}.{uuid.uuid4().hex[:8]}.tmp")
-    with _job_lock(job_dir):
+    with job_lock(job_dir):
         try:
             tmp.write_text(rs.model_dump_json(indent=2), encoding="utf-8")
-            _replace_with_retry(tmp, p)
+            replace_with_retry(tmp, p)
         except BaseException:
             tmp.unlink(missing_ok=True)
             raise
@@ -108,7 +108,7 @@ def save_reviews(job_dir: Path, rs: ReviewSet) -> None:
 def upsert_review(job_dir: Path, r: Review) -> ReviewSet:
     """Load, upsert and save one review under the job lock, so concurrent
     saves for different clips all survive (load/modify/save is not atomic)."""
-    with _job_lock(job_dir):
+    with job_lock(job_dir):
         rs = load_reviews(job_dir)
         rs.upsert(r)
         save_reviews(job_dir, rs)

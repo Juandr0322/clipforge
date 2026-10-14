@@ -62,3 +62,6 @@
 2026-10-14 | F12 | reviewer | MINOR | round 1: output -t always passed changed plain renders vs main (1 frame / ~30 ms audio); fallback row kept stale keys and overlay.ass; _plan_extras failure listed only captions; bidi/zero-width chars not stripped
 2026-10-14 | F12 | reviewer | QUESTION | round 1: hook text score ignored the F12 overlay (wired in via quality/run.py with lead's approval)
 2026-10-14 | F12 | reviewer | MINOR | open: ffmpeg 8.x untested locally (CI is the check); candidate fallback overrides refine's out-of-order clearing; tests hand-write refined.json
+2026-10-14 | F31 | reviewer | MAJOR | round 1: bad recipe name/file left job stuck at ingested with no error (fixed: fixed-sentence FAILED, CLI exit 2)
+2026-10-14 | F31 | reviewer | MINOR | round 1 fixed: version drift record, no recipe.json for finished pre-F31 jobs, env parse matches from_env, atomic write_record
+2026-10-14 | F31 | reviewer | MINOR | open: CLI early CLIPFORGE_RECIPE check refuses jobs the server would run, and its except RecipeError branch is untested; drift overwrites recorded version (no history); baseline test job 'old' is not main's code; private helper imports

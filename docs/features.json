@@ -740,7 +740,7 @@
         "Each job records the recipe name and version it ran with (test)",
         "Recipe 'talk' reproduces today's behaviour: with mock engines it gives the same candidates and render parameters as before (test)"
       ],
-      "passes": false,
+      "passes": true,
       "notes": "Planner refines these acceptance criteria against the code as it stands before this feature is built."
     },
     {

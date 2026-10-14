@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict
 
 from clipforge.common.manifest import Manifest
 from clipforge.refine.refine import RefinedSet
-from clipforge.review.store import _job_lock, _replace_with_retry
+from clipforge.review.store import job_lock, replace_with_retry
 
 SECTIONS = ("hook_score", "value_adds", "pacing_flags", "variants", "loop",
             "exports", "audio_layer")
@@ -39,7 +39,7 @@ def report_path(job_dir: Path, clip_id: int) -> Path:
 
 
 def load_report(job_dir: Path, clip_id: int) -> Optional[ClipReport]:
-    with _job_lock(job_dir):
+    with job_lock(job_dir):
         p = report_path(job_dir, clip_id)
         if not p.exists():
             return None
@@ -53,7 +53,7 @@ def _write(job_dir: Path, report: ClipReport) -> None:
         # newline="\n": text mode would write CRLF on Windows
         tmp.write_text(report.model_dump_json(indent=2, exclude_none=True),
                        encoding="utf-8", newline="\n")
-        _replace_with_retry(tmp, p)
+        replace_with_retry(tmp, p)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
@@ -65,7 +65,7 @@ def update_section(job_dir: Path, clip_id: int, section: str,
     Load, modify and atomic save all happen under the per-job lock."""
     if section not in SECTIONS:
         raise ValueError(f"unknown report section: {section}")
-    with _job_lock(job_dir):
+    with job_lock(job_dir):
         report = load_report(job_dir, clip_id) or ClipReport(clip_id=clip_id)
         data = report.model_dump()
         data[section] = value
@@ -83,6 +83,6 @@ def quality_job(job_dir: Path) -> None:
     for clip in rs.clips:
         if not (job_dir / "renders" / f"clip_{clip.id:03d}.mp4").exists():
             continue
-        with _job_lock(job_dir):
+        with job_lock(job_dir):
             if not report_path(job_dir, clip.id).exists():
                 _write(job_dir, ClipReport(clip_id=clip.id))
