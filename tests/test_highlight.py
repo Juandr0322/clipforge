@@ -11,7 +11,7 @@ from clipforge.highlight.backends import (
 from clipforge.highlight.chunker import Chunk, chunk_transcript
 from clipforge.highlight.run import HighlightError, highlight_job
 from clipforge.highlight.schema import (
-    CandidateSet, ClipCandidate, RejectedCandidate, dedup,
+    HOOK_TYPES, CandidateSet, ClipCandidate, RejectedCandidate, dedup,
 )
 from clipforge.ingest.ingest import ingest
 from clipforge.transcribe.backends import MockTranscriber
@@ -690,3 +690,27 @@ def test_save_load_roundtrip_rejected_and_stranger_check(tmp_path):
     back = CandidateSet.load(p)
     assert back == cs
     assert back.rejected[0].reason == "necesita contexto: café"
+
+
+def test_hook_types_exact_set():
+    assert HOOK_TYPES == {"bold_claim", "question", "story_open",
+                          "contrarian", "number", "reveal", "emotion",
+                          "reaction", "funny", "other"}
+
+
+def test_prompt_lists_every_hook_type_and_definitions():
+    sp = build_system_prompt()
+    line = next(ln for ln in sp.splitlines() if '"hook_type": "<' in ln)
+    listed = set(line.split('"hook_type": "<')[1].split(">")[0].split("|"))
+    assert listed == HOOK_TYPES
+    for ht in HOOK_TYPES:
+        assert ht in sp
+    assert "a big live reaction (yelling, shock, celebration)" in sp
+    assert "a fail, joke or chaotic moment" in sp
+    assert "OPENING hook" in sp and "clip as a whole" in sp
+
+
+@pytest.mark.parametrize("ht", ["reaction", "funny"])
+def test_parse_keeps_new_hook_types(ht):
+    (c,) = _parse(_item(hook_type=ht, type="story"))
+    assert c["hook_type"] == ht and c["type"] == "story"

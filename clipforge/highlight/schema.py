@@ -18,7 +18,8 @@ ClipType = Literal["opinion", "story", "insight", "howto", "funny",
                    "emotional", "other"]
 
 HookType = Literal["bold_claim", "question", "story_open", "contrarian",
-                   "number", "reveal", "emotion", "other"]
+                   "number", "reveal", "emotion", "reaction", "funny",
+                   "other"]
 HOOK_TYPES = frozenset(HookType.__args__)
 
 

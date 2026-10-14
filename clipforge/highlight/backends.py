@@ -15,11 +15,12 @@ import os
 import re
 import sys
 from pathlib import Path
+from typing import get_args
 
 from clipforge.highlight.chunker import Chunk, chunk_transcript
 from clipforge.highlight.schema import (
     HOOK_TYPES, MAX_CLIP_SEC, MIN_CLIP_SEC, CandidateSet, ClipCandidate,
-    RejectedCandidate, dedup,
+    HookType, RejectedCandidate, dedup,
 )
 from clipforge.transcribe.schema import Transcript
 
@@ -52,9 +53,13 @@ sentence>", "type": "<opinion|story|insight|howto|funny|emotional|other>", \
 "reaction_peak_t": <sec of the peak reaction or punchline>, \
 "payoff_end_t": <sec the payoff finishes>, \
 "context_setup": "<ONE line: what a viewer must know first>", \
-"hook_type": "<bold_claim|question|story_open|contrarian|number|reveal|\
-emotion|other>", \
+"hook_type": "<{hook_types}>", \
 "stranger_check": {{"pass": <true|false>, "reason": "<one sentence>"}}}}
+
+hook_type describes the OPENING hook (the first seconds), while type \
+describes the clip as a whole; they are separate fields and may differ. \
+hook_type "reaction" = a big live reaction (yelling, shock, celebration); \
+"funny" = a fail, joke or chaotic moment.
 
 trigger_t <= reaction_peak_t <= payoff_end_t, all inside [start, end].
 Stranger check: imagine a viewer who has never seen this channel or the rest \
@@ -76,6 +81,7 @@ def build_system_prompt(examples_text: str = "") -> str:
         ex = ("\nHere are examples of clips that performed well, for "
               "calibration:\n" + examples_text.strip())
     return SYSTEM_PROMPT.format(min_len=MIN_CLIP_SEC, max_len=MAX_CLIP_SEC,
+                                hook_types="|".join(get_args(HookType)),
                                 examples=ex)
 
 
