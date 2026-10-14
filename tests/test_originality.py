@@ -102,6 +102,7 @@ def test_hostile_context_text_is_sanitised(square_video, tmp_path):
     out = tmp_path / "h.mp4"
     _render(square_video, out, overlay_ass=ass)
     verify_render(out, 6.0)
+    assert sanitize_text("a\u202eb\u200bc\u2066d", 50) == "abcd"
     assert sanitize_text(None, 10) == "" and sanitize_text(5, 10) == ""
     assert context_event("  \n ", 5.0) is None
 
@@ -154,17 +155,22 @@ V2 = ("trigger_t", "reaction_peak_t", "payoff_end_t", "context_setup",
       "hook_type")
 
 
-def _set_candidates(job_dir, **fields):
-    """Rewrite candidates.json: drop the mock's v2 fields, then add `fields`
-    (callable values get the candidate), and re-render."""
-    cpath = job_dir / "candidates.json"
-    data = json.loads(cpath.read_text(encoding="utf-8"))
-    for c in data["candidates"]:
-        for k in V2:
-            c.pop(k, None)
-        for k, v in fields.items():
-            c[k] = v(c) if callable(v) else v
-    cpath.write_text(json.dumps(data), encoding="utf-8", newline="\n")
+def _set_candidates(job_dir, refined=None, **fields):
+    """Rewrite candidates.json (mock's v2 fields dropped, then `fields`
+    added) and refined.json (times dropped, then `refined` added), as the
+    refine stage would have left them, and re-render. Callable values get
+    the candidate / refined clip dict."""
+    def rewrite(name, key, drop, add):
+        path = job_dir / name
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for c in data[key]:
+            for k in drop:
+                c.pop(k, None)
+            for k, v in add.items():
+                c[k] = v(c) if callable(v) else v
+        path.write_text(json.dumps(data), encoding="utf-8", newline="\n")
+    rewrite("candidates.json", "candidates", V2, fields)
+    rewrite("refined.json", "clips", V2[:3], refined or {})
     return render_job(job_dir, force=True)
 
 
@@ -202,7 +208,7 @@ def test_v2_fields_and_end_card_in_pipeline_job(job, monkeypatch):
     monkeypatch.setenv("CLIPFORGE_END_CARD", "1")
     m = _set_candidates(
         job, context_setup="He had never lost here before",
-        reaction_peak_t=lambda c: c["start"] + 3.0)
+        refined={"reaction_peak_t": lambda c: c["start"] + 3.0})
     for cid in _clip_ids(job):
         va = _value_adds(job, cid)
         assert va["context_overlay"]["applied"]
@@ -220,11 +226,54 @@ def test_v2_fields_and_end_card_in_pipeline_job(job, monkeypatch):
 
 def test_junk_peak_is_not_applied(job, monkeypatch):
     monkeypatch.delenv("CLIPFORGE_END_CARD", raising=False)
-    _set_candidates(job, reaction_peak_t=9999.0)
+    _set_candidates(job, refined={"reaction_peak_t": None},
+                    reaction_peak_t=9999.0)
     for cid in _clip_ids(job):
         va = _value_adds(job, cid)
         assert not va["punch_in"]["applied"]
-        assert "outside" in va["punch_in"]["reason"]
+        assert va["punch_in"]["reason"] == "reaction_peak_t outside the clip"
+
+
+def test_peak_cleared_by_refine_falls_back_to_candidate(job, monkeypatch):
+    monkeypatch.delenv("CLIPFORGE_END_CARD", raising=False)
+    _set_candidates(job, refined={"reaction_peak_t": None},
+                    reaction_peak_t=lambda c: c["start"] + 3.0)
+    for cid in _clip_ids(job):
+        assert _value_adds(job, cid)["punch_in"]["applied"]
+
+
+def test_refined_peak_wins_over_candidate(job, monkeypatch):
+    monkeypatch.delenv("CLIPFORGE_END_CARD", raising=False)
+    _set_candidates(job, refined={"reaction_peak_t":
+                                  lambda c: c["start"] + 5.0},
+                    reaction_peak_t=lambda c: c["start"] + 3.0)
+    for cid in _clip_ids(job):
+        assert _value_adds(job, cid)["punch_in"]["peak_t"] == 5.0
+
+
+def test_cleared_peak_and_candidate_outside_not_applied(job, monkeypatch):
+    monkeypatch.delenv("CLIPFORGE_END_CARD", raising=False)
+    _set_candidates(job, refined={"reaction_peak_t": None},
+                    reaction_peak_t=-1.0)
+    for cid in _clip_ids(job):
+        va = _value_adds(job, cid)
+        assert va["punch_in"]["reason"] == "reaction_peak_t outside the clip"
+
+
+def test_plain_render_command_has_no_t_option(job, monkeypatch):
+    import clipforge.render.render as rr
+    cmds = []
+    monkeypatch.setattr(rr, "_run", lambda cmd, timeout=0: cmds.append(cmd))
+    monkeypatch.delenv("CLIPFORGE_END_CARD", raising=False)
+    from clipforge.reframe.detect import CropPath
+    crop = CropPath(clip_id=1, mode="center")
+    rr.render_clip(job / "x.mp4", job / "y.mp4", 0.0, 5.0, crop, 640, 360,
+                   30.0)
+    rr.render_clip(job / "x.mp4", job / "y.mp4", 0.0, 5.0, crop, 640, 360,
+                   30.0, end_card_sec=2.0)
+    assert "-t" in cmds[0] and cmds[0].count("-t") == 1   # input -t only
+    assert cmds[0].index("-t") < cmds[0].index("-i")
+    assert cmds[1].count("-t") == 2
 
 
 def test_extras_failure_falls_back_to_plain_render(job, monkeypatch):
@@ -238,8 +287,27 @@ def test_extras_failure_falls_back_to_plain_render(job, monkeypatch):
 
     monkeypatch.setattr(run, "render_clip", flaky)
     monkeypatch.delenv("CLIPFORGE_END_CARD", raising=False)
-    _set_candidates(job, reaction_peak_t=lambda c: c["start"] + 3.0)
+    _set_candidates(job, context_setup="Some setup",
+                    refined={"reaction_peak_t": lambda c: c["start"] + 3.0})
     for cid in _clip_ids(job):
         va = _value_adds(job, cid)
         assert not va["punch_in"]["applied"]
         assert "/" not in va["punch_in"]["reason"]
+        assert set(va["context_overlay"]) == {"name", "applied", "reason"}
+        assert not va["context_overlay"]["applied"]
+        assert not (job / "renders" / f"clip_{cid:03d}.overlay.ass").exists()
+
+
+def test_planning_failure_still_lists_all_four_rows(job, monkeypatch):
+    import clipforge.render.run as run
+
+    def boom(*a, **k):
+        raise ValueError("/secret")
+
+    monkeypatch.setattr(run, "_plan_extras", boom)
+    _set_candidates(job)
+    for cid in _clip_ids(job):
+        va = _value_adds(job, cid)
+        assert set(va) == {"context_overlay", "punch_in", "end_card",
+                           "captions"}
+        assert not va["punch_in"]["applied"] and va["captions"]["applied"]

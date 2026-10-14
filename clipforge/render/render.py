@@ -156,7 +156,7 @@ def render_clip(normalized_video: Path, out_path: Path, start: float,
         "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "160k", "-ar", "48000",
         "-movflags", "+faststart",
-        "-t", f"{total:.3f}",
+        *(["-t", f"{total:.3f}"] if end_card_sec > 0 else []),
         str(out_path),
     ])
     if sendcmd_path and sendcmd_path.exists():

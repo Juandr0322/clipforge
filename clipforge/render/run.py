@@ -7,6 +7,7 @@ and write a QA contact sheet. Advances manifest to RENDERED.
 """
 from __future__ import annotations
 
+import math
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,14 +25,29 @@ from clipforge.render.render import (
 from clipforge.transcribe.schema import Transcript
 
 
-_V2_FIELDS = ("trigger_t", "reaction_peak_t", "payoff_end_t",
-              "context_setup", "hook_type")
+_TIMES = ("trigger_t", "reaction_peak_t", "payoff_end_t")
+
+
+def _num(v) -> bool:
+    return (isinstance(v, (int, float)) and not isinstance(v, bool)
+            and math.isfinite(v))
+
+
+def _pick_time(own, cand, start: float, end: float):
+    """(value, seen). The refined clip's own value wins when it is a finite
+    number inside the clip. When it is None/absent/out of range, the
+    candidate's value is used only if finite and strictly inside the clip.
+    `seen` says some source had a value, i.e. a miss means 'outside'."""
+    if _num(own) and start <= own <= end:
+        return float(own), True
+    if _num(cand) and start < cand < end:
+        return float(cand), True
+    return None, own is not None or cand is not None
 
 
 def _v2_fields(job_dir: Path, m: Manifest, rs: RefinedSet) -> dict[int, dict]:
-    """Per refined clip: the optional highlight v2 fields (absolute times).
-    A refined clip that carries a field itself wins; otherwise it is read
-    from candidates.json (v1 files and unreadable files give no fields)."""
+    """Per refined clip: the optional highlight v2 fields (absolute times),
+    resolved as in _pick_time. Unreadable or v1 files give no fields."""
     cands = {}
     try:
         if m.candidates_path:
@@ -43,9 +59,15 @@ def _v2_fields(job_dir: Path, m: Manifest, rs: RefinedSet) -> dict[int, dict]:
     out = {}
     for clip in rs.clips:
         src = cands.get(clip.candidate_id)
-        out[clip.id] = {
-            f: (getattr(clip, f) if hasattr(clip, f)
-                else getattr(src, f, None)) for f in _V2_FIELDS}
+        f = {}
+        for name in _TIMES:
+            f[name], f[name + "_seen"] = _pick_time(
+                getattr(clip, name, None), getattr(src, name, None),
+                clip.start, clip.end)
+        own = getattr(clip, "context_setup", None)
+        f["context_setup"] = (own if own is not None
+                              else getattr(src, "context_setup", None))
+        out[clip.id] = f
     return out
 
 
@@ -76,11 +98,11 @@ def _plan_extras(clip, fields: dict, cfg: OverlayConfig, renders: Path):
         reason = "disabled by CLIPFORGE_PUNCH_IN"
     else:
         raw = fields.get("reaction_peak_t")
-        rel = None if raw is None else raw - clip.start
-        peak = valid_rel_time(rel, dur)
+        peak = valid_rel_time(None if raw is None else raw - clip.start, dur)
         reason = ("" if peak is not None else
-                  "no reaction_peak_t from highlight" if raw is None
-                  else "reaction_peak_t outside the clip")
+                  "reaction_peak_t outside the clip"
+                  if fields.get("reaction_peak_t_seen")
+                  else "no reaction_peak_t from highlight")
     if peak is not None:
         zoom = ZoomSpec(peak_t=peak)
         entries.append({"name": "punch_in", "applied": True,
@@ -162,7 +184,11 @@ def render_job(job_dir: str | Path, force: bool = False,
                 zoom, ov_ass, card, entries = _plan_extras(
                     clip, v2.get(clip.id, {}), cfg, renders)
             except Exception:  # noqa: BLE001 - extras are best-effort
-                zoom, ov_ass, card, entries = None, None, 0.0, []
+                zoom, ov_ass, card = None, None, 0.0
+                entries = [{"name": n, "applied": False,
+                            "reason": "could not be planned"}
+                           for n in ("context_overlay", "punch_in",
+                                     "end_card")]
             expected = clip.end - clip.start + card
             plain = zoom is None and ov_ass is None and not card
             try:
@@ -178,9 +204,11 @@ def render_job(job_dir: str | Path, force: bool = False,
                 if plain:
                     raise
                 # extras must never fail the stage: redo the plain cut
-                entries = [dict(e, applied=False,
-                                reason="extras failed, rendered without them")
+                entries = [{"name": e["name"], "applied": False,
+                            "reason": "extras failed, rendered without them"}
                            if e["applied"] else e for e in entries]
+                if ov_ass is not None:
+                    ov_ass.unlink(missing_ok=True)
                 render_clip(norm, out, clip.start, clip.end, crop, **kw)
                 verify_render(out, clip.end - clip.start)
             entries.append({

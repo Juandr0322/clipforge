@@ -21,6 +21,7 @@ import math
 import os
 import re
 import textwrap
+import unicodedata
 from dataclasses import dataclass
 
 from clipforge.render.captions import CaptionStyle, _ass_time
@@ -84,11 +85,12 @@ class OverlayConfig:
 
 def sanitize_text(text, max_chars: int) -> str:
     """Plain one-line text safe to place in an ASS Dialogue line: control
-    characters, backslashes and braces (ASS override syntax) are removed."""
+    and format characters (bidi overrides, zero-width), backslashes and braces (ASS override syntax) are removed."""
     if not isinstance(text, str):
         return ""
     s = re.sub(r"[\x00-\x1f\x7f-\x9f  ]", " ", text)
     s = re.sub(r"[\\{}]", "", s)
+    s = "".join(ch for ch in s if unicodedata.category(ch) != "Cf")
     s = " ".join(s.split())
     if len(s) > max_chars:
         s = s[:max_chars - 1].rstrip() + "…"
