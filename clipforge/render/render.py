@@ -95,7 +95,9 @@ def write_sendcmd(path: Path, crop: CropPath, geom: CropGeometry,
 
 
 def build_filtergraph(geom: CropGeometry, crop: CropPath, src_w: int,
-                      ass_path: Path | None, sendcmd_path: Path | None) -> str:
+                      ass_path: Path | None, sendcmd_path: Path | None,
+                      zoom=None, overlay_ass: Path | None = None,
+                      end_card_sec: float = 0.0) -> str:
     parts = []
     if geom.mode == "crop":
         if crop.mode in ("static", "center") or sendcmd_path is None:
@@ -110,15 +112,24 @@ def build_filtergraph(geom: CropGeometry, crop: CropPath, src_w: int,
     else:  # letterbox narrow sources
         parts.append(f"scale={OUT_W}:-2")
         parts.append(f"pad={OUT_W}:{OUT_H}:(ow-iw)/2:(oh-ih)/2:color=black")
+    if zoom is not None:        # about the frame centre = the tracked crop
+        parts.append(zoom.filter(OUT_W, OUT_H))
+    if end_card_sec > 0:        # black frames after the clip for the end card
+        parts.append(f"tpad=stop_mode=add:stop_duration={end_card_sec:.3f}"
+                     ":color=black")
     if ass_path is not None:
         parts.append(f"ass={ffmpeg_filter_path(ass_path)}")
+    if overlay_ass is not None:
+        parts.append(f"ass={ffmpeg_filter_path(overlay_ass)}")
     return ",".join(parts)
 
 
 def render_clip(normalized_video: Path, out_path: Path, start: float,
                 end: float, crop: CropPath, src_w: int, src_h: int,
                 fps: float, ass_path: Path | None = None,
-                workdir: Path | None = None) -> None:
+                workdir: Path | None = None, zoom=None,
+                overlay_ass: Path | None = None,
+                end_card_sec: float = 0.0) -> None:
     duration = end - start
     geom = CropGeometry.for_source(src_w, src_h)
 
@@ -127,17 +138,25 @@ def render_clip(normalized_video: Path, out_path: Path, start: float,
         sendcmd_path = (workdir or out_path.parent) / (out_path.stem + ".cmds")
         write_sendcmd(sendcmd_path, crop, geom, src_w, fps, duration)
 
-    vf = build_filtergraph(geom, crop, src_w, ass_path, sendcmd_path)
+    vf = build_filtergraph(geom, crop, src_w, ass_path, sendcmd_path,
+                           zoom=zoom, overlay_ass=overlay_ass,
+                           end_card_sec=end_card_sec)
+    af = f"loudnorm=I={TARGET_LUFS}:TP=-1.5:LRA=11"
+    total = duration
+    if end_card_sec > 0:
+        af += f",apad=pad_dur={end_card_sec:.3f}"
+        total = duration + end_card_sec
     _run([
         "ffmpeg", "-y",
         "-ss", f"{start:.3f}", "-t", f"{duration:.3f}",
         "-i", str(normalized_video),
         "-vf", vf,
-        "-af", f"loudnorm=I={TARGET_LUFS}:TP=-1.5:LRA=11",
+        "-af", af,
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "160k", "-ar", "48000",
         "-movflags", "+faststart",
+        "-t", f"{total:.3f}",
         str(out_path),
     ])
     if sendcmd_path and sendcmd_path.exists():
