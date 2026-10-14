@@ -394,8 +394,8 @@
         "Each clip's report value_adds lists context_overlay, punch_in, end_card and captions, each with applied true/false and a reason (e.g. 'no reaction_peak_t from highlight') (mock pipeline test)",
         "Clips from v1 candidates (no new fields) render as before, and tests/test_render.py passes unchanged"
       ],
-      "passes": false,
-      "notes": "The punch-in must follow the existing face-tracking crop path, not the frame center. Make each value-add switchable by a CLIPFORGE_* setting and add new names to .env.example."
+      "passes": true,
+      "notes": "OPEN ITEM: only ffmpeg 6.1.1 was run locally; scale eval=frame + per-frame crop x/y (t-based), tpad, apad and ass must be confirmed on ffmpeg 8.x by CI (the 3-job matrix) once pushed. Follow-ups: _pick_time falls back to the candidate peak even when refine deliberately cleared an out-of-order time (harmless for zoom); test_originality rewrites refined.json by hand instead of re-running refine on v2 candidates; mock highlighter now emits overlay+zoom on every mock run (~4% slower). The punch-in must follow the existing face-tracking crop path, not the frame center. Make each value-add switchable by a CLIPFORGE_* setting and add new names to .env.example."
     },
     {
       "id": "F13",

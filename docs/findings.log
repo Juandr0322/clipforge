@@ -48,3 +48,7 @@
 2026-10-14 | F25 | reviewer | MINOR | prompt's general HOOK bullet still describes only spoken hooks (open); funny now in both hook_type and ClipType
 2026-10-14 | F11 | reviewer | MINOR | open: payoff can still be cut when preamble trim is refused (_enforce_length caps from an earlier start); get_detector built on every pipeline run even with no work; motion score counts caption pixels
 2026-10-14 | F11 | reviewer | QUESTION | text sub-score ignored the F12 overlay (wired in F12 round 1)
+2026-10-14 | F12 | reviewer | MAJOR | round 1: merged with F11, an existing-but-None refined time overrode candidates.json so tests failed and a cleared peak silently lost the punch-in with a wrong reason
+2026-10-14 | F12 | reviewer | MINOR | round 1: output -t always passed changed plain renders vs main (1 frame / ~30 ms audio); fallback row kept stale keys and overlay.ass; _plan_extras failure listed only captions; bidi/zero-width chars not stripped
+2026-10-14 | F12 | reviewer | QUESTION | round 1: hook text score ignored the F12 overlay (wired in via quality/run.py with lead's approval)
+2026-10-14 | F12 | reviewer | MINOR | open: ffmpeg 8.x untested locally (CI is the check); candidate fallback overrides refine's out-of-order clearing; tests hand-write refined.json
