@@ -2,6 +2,7 @@
 <!-- Newest entry at the top. The lead adds one entry per feature attempt.
      Every agent reads the top of this file first, so keep entries to 1–2 lines. -->
 
+- 2026-10-14 · F25 · merged · hook_type gains `reaction` and `funny` (gaming streams); prompt list now generated from the HookType Literal so it can't drift. Review PASS first round. 532 tests + mock e2e OK. Next: F11 + F12 in parallel.
 - 2026-10-14 · F10 · merged · candidates.json v2: trigger/peak/payoff times, context_setup, hook_type, stranger_check + rejected list; v1 files still load; parser can no longer raise on hostile LLM replies. Review FAIL x2 fixed (unhashable hook_type, >4300-digit ints, deep nesting, CRLF). 528 tests + mock e2e OK. Next: F11/F12 (refine must remap the new times).
 - 2026-10-14 · F09 · merged · renders/clip_NNN.report.json per clip (6 optional sections, locked per-section updates, never rewritten on rerun), quality pass after render; pipeline survives a failing pass. Review FAIL fixed (sandbox placeholders committed, CRLF, silent failure). 339 tests + mock e2e OK. Next: F10, then F11/F12.
 - 2026-10-14 · F08 · merged · one JSON profile per platform (tiktok/reels/shorts/x/facebook) + validated loader + shared main-tier safe zone. Review FAIL fixed (false 'checked' date, NaN/Infinity). Limits are UNVERIFIED (from memory): re-check against official docs before use.
