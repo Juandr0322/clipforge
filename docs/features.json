@@ -279,8 +279,8 @@
         "Asking for an unknown platform raises a clear error listing the valid names (test)",
         "A helper returns the safe zone shared by all main-tier platforms. It is a non-empty rectangle inside 1080x1920, and changing one profile file's safe zone changes the result (test with temp profile files)"
       ],
-      "passes": false,
-      "notes": "Store profile values as data, not code, so Diego can edit them by hand. Check current platform limits when writing them and add a 'checked' date and a source note in each file. Tests check structure and behaviour, not specific platform numbers."
+      "passes": true,
+      "notes": "OPEN ITEM: all five profiles say checked=unverified (values written from memory, no live lookup). Someone with web access must verify limits and safe zones against the official platform help pages and set real YYYY-MM-DD dates + source URLs before relying on the numbers. Follow-ups: accept UTF-8 BOM (utf-8-sig), catch OverflowError/RecursionError, validate ISO date with date.fromisoformat. Store profile values as data, not code, so Diego can edit them by hand. Check current platform limits when writing them and add a 'checked' date and a source note in each file. Tests check structure and behaviour, not specific platform numbers."
     },
     {
       "id": "F09",
@@ -301,8 +301,8 @@
         "Jobs rendered before this feature, with no report files, still load in GET /api/jobs/{id}, and the existing test_server tests pass",
         "No existing Stage name or STAGE_ORDER entry is renamed or removed (test_server and test_ingest pass unchanged)"
       ],
-      "passes": false,
-      "notes": "The quality pass runs after render inside run_pipeline and is idempotent. Later features (F11, F12, F13, F14, F15) each fill in their own section through the shared helper."
+      "passes": true,
+      "notes": "Follow-ups: expose public lock/replace helpers in review/store.py instead of importing private names; decide whether `render --force` should reset stale reports and how load_report recovers from a corrupt report before F11 lands; share the source_video fixture via conftest.py; the LF test only bites on Windows. The quality pass runs after render inside run_pipeline and is idempotent. Later features (F11, F12, F13, F14, F15) each fill in their own section through the shared helper."
     },
     {
       "id": "F10",

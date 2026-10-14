@@ -33,3 +33,10 @@
 2026-10-13 | F24 | diego | MAJOR | F23 passed temperature=0 to messages.create; anthropic 1.x removed it, so highlighting crashed on Windows (fake client hid it)
 2026-10-13 | F24 | reviewer | MINOR | F24 notes not updated with why the temperature test was replaced (added at close-out)
 2026-10-13 | F24 | reviewer | MINOR | whitespace-only ANTHROPIC_WORKSPACE_ID would be passed as workspace_id (left open)
+2026-10-14 | F08 | reviewer | MAJOR | profiles claimed checked=2026-10-13 though values were written from memory; now "unverified" (real check still open)
+2026-10-14 | F08 | reviewer | MAJOR | loader accepted NaN/Infinity (raw ValueError leak, disabled length checks)
+2026-10-14 | F08 | reviewer | MINOR | fractional px truncated; name vs filename unchecked; non-object section gave misleading "'.min' missing"
+2026-10-14 | F08 | reviewer | MINOR | open: huge-int OverflowError, UTF-8 BOM rejected, RecursionError, checked date shape-only
+2026-10-14 | F09 | reviewer | MAJOR | builder committed 7 sandbox placeholder paths under .claude/ (git add -A)
+2026-10-14 | F09 | reviewer | MINOR | report temp file written without newline="\n" (CRLF on Windows); quality_job failure after RENDERED was silent
+2026-10-14 | F09 | reviewer | MINOR | open: private store helpers imported, duplicated fixture, stale reports after render --force, LF test only bites on Windows, corrupt-report recovery undecided
