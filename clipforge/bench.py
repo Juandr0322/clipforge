@@ -34,7 +34,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from clipforge.common.manifest import Manifest, is_safe_job_id
 from clipforge.highlight.backends import USAGE_NAME
-from clipforge.review.store import _replace_with_retry
+from clipforge.review.store import replace_with_retry
 
 BENCH_ENV = "CLIPFORGE_BENCH_DIR"
 DEFAULT_BENCH_DIR = Path.home() / "clipforge-bench"
@@ -170,7 +170,7 @@ def _write_atomic(dest: Path, text: str) -> None:
     try:
         with tmp.open("w", encoding="utf-8", newline="") as f:
             f.write(text)
-        _replace_with_retry(tmp, dest)
+        replace_with_retry(tmp, dest)
     finally:
         tmp.unlink(missing_ok=True)
 

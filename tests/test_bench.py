@@ -356,13 +356,13 @@ def test_bad_path_entry_does_not_stop_the_run(tmp_path):
 
 
 def _lock_results(monkeypatch):
-    real = bench._replace_with_retry
+    real = bench.replace_with_retry
 
     def locked(tmp, dest):
         if Path(dest).name == bench.RESULTS_NAME:
             raise PermissionError(13, "file is open in another program")
         return real(tmp, dest)
-    monkeypatch.setattr(bench, "_replace_with_retry", locked)
+    monkeypatch.setattr(bench, "replace_with_retry", locked)
 
 
 def test_locked_results_csv_keeps_the_run(monkeypatch, tmp_path):
