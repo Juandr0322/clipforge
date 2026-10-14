@@ -265,6 +265,29 @@
       "notes": "Done: the F23 temperature==0 test was replaced by test_no_temperature_kwarg because SDK 1.x removed that parameter (see commit 663b4b9). Optional follow-up: strip whitespace-only ANTHROPIC_WORKSPACE_ID. Bug reported on Windows with anthropic 1.13.0: TypeError: Messages.create() got an unexpected keyword argument 'temperature'. F23 added temperature=0 to the messages.create call in clipforge/highlight/backends.py and SDK 1.x removed that parameter; the F23 fake client accepted any kwarg and hid it. The lead checked the repo venv: anthropic 1.13.0 is installed, and inspect.signature(anthropic.resources.messages.Messages.create) has NO temperature but DOES have workspace_id (also max_tokens, messages, model, system, extra_headers, ...). The builder should check these facts again with .venv/bin/python -I before coding. Must be built and merged BEFORE F10, which also touches clipforge/highlight/backends.py. Do not touch PR #2 or any of F10's files except clipforge/highlight/backends.py. The F23 debug/raw-reply code (RAW_REPLY_NAME/RAW_REPLY_GLOB, debug_dir, stale-file cleanup) stays as is. Edit .env.example only if the ANTHROPIC_WORKSPACE_ID comment needs rewording (it now maps to the native workspace_id argument, not a header); never print its value. Tests must never call the real Claude API."
     },
     {
+      "id": "F25",
+      "title": "Add 'reaction' and 'funny' to the hook_type vocabulary (gaming-stream clip types)",
+      "priority": 0,
+      "area": [
+        "clipforge/highlight/schema.py",
+        "clipforge/highlight/backends.py",
+        "tests/test_highlight.py"
+      ],
+      "depends_on": [
+        "F10"
+      ],
+      "acceptance": [
+        "HOOK_TYPES contains 'reaction' and 'funny' in addition to all existing values (bold_claim, question, story_open, contrarian, number, reveal, emotion, other), which are unchanged; a test in tests/test_highlight.py asserts the exact set",
+        "The highlight system prompt lists every member of HOOK_TYPES, with the short definitions 'reaction' = a big live reaction (yelling, shock, celebration) and 'funny' = a fail, joke or chaotic moment. A test iterates HOOK_TYPES and asserts each value appears in the built prompt text (so the prompt can never drift from the vocabulary again) and that both definitions are present",
+        "parse_llm_response keeps hook_type 'reaction' and 'funny' as given (not collapsed to 'other'); unknown strings, non-strings and null behave exactly as before. New tests for the two values pass and the existing F10 junk-type tests pass unchanged",
+        "MockHighlighter's deterministic output, the v1 fixture (tests/test_highlight.py + tests/fixtures/candidates_v1.json) and the compat tests are unchanged and pass; CandidateSet.schema_version does not change. The vocabulary has ONE source: the HookType Literal in clipforge/highlight/schema.py (HOOK_TYPES is derived from it); the prompt's hook_type list in clipforge/highlight/backends.py is generated from that source, not a second hand-typed copy",
+        "docs/SPEC.md is NOT edited: it only says 'hook_type (fixed vocabulary)' (section 5, line 78) and lists no values, so there is nothing to update",
+        "The full suite (python -m pytest tests/ -q) and python -m pyflakes clipforge tests are green; the F24 real-SDK-signature test and the F23 raw-reply debug code (RAW_REPLY_NAME/RAW_REPLY_GLOB, debug_dir, stale-file cleanup) are untouched"
+      ],
+      "passes": false,
+      "notes": "Small follow-up to F10 requested by Diego: reaction and funny are the most common clip types for gaming streams. Must be merged before F11/F12 are built (F11's hook scoring may use hook_type). Planner checked the code: the vocabulary lives in clipforge/highlight/schema.py (HookType Literal, HOOK_TYPES = frozenset(HookType.__args__)) and is imported by backends.py, but the system prompt in backends.py (around line 55) hardcodes the list as a second copy; replace that with text built from HookType so they cannot drift (keep 'other' last). 'funny' already exists in the separate ClipType vocabulary for the 'type' field; that is fine, do not merge or rename the two fields, but make the prompt clear that hook_type describes the opening hook. docs/SPEC.md documents no hook_type values, so it is left alone. Tests must never call the real Claude API."
+    },
+    {
       "id": "F08",
       "title": "Platform profiles: one settings file per platform, read by later steps",
       "priority": 7,
