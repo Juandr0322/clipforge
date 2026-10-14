@@ -4,6 +4,7 @@ ClipForge CLI.
 Usage:
     python -m clipforge.cli ingest <video-file> [--workspace DIR] [--force]
     python -m clipforge.cli status <job-id>    [--workspace DIR]
+    python -m clipforge.cli audio check|add ...
 """
 import argparse
 import datetime
@@ -207,6 +208,30 @@ def main() -> int:
     ps.add_argument("job_id")
     ps.add_argument("--workspace", default=str(DEFAULT_WS))
 
+    pa = sub.add_parser("audio", help="Manage the sound-effect and music "
+                        "library (see docs/AUDIO_SOURCES.md)")
+    asub = pa.add_subparsers(dest="audio_cmd", required=True)
+    ac = asub.add_parser("check", help="Validate library.json and list "
+                         "every problem")
+    ac.add_argument("--library", default=None,
+                    help="Library folder (default: CLIPFORGE_AUDIO_LIBRARY "
+                         "or ~/clipforge-audio)")
+    aa = asub.add_parser("add", help="Copy an audio file into the library "
+                         "with its licence and source")
+    aa.add_argument("file")
+    aa.add_argument("--kind", required=True, choices=["sfx", "music"])
+    aa.add_argument("--tags", required=True,
+                    help="Comma-separated, e.g. impact or gaming,energetic")
+    aa.add_argument("--license", required=True)
+    aa.add_argument("--source", required=True,
+                    help="Where the file came from (URL)")
+    aa.add_argument("--attribution", default="",
+                    help="Credit line, when the licence needs one")
+    aa.add_argument("--platforms", default="all",
+                    help="Comma-separated: all, tiktok, reels, shorts, x, "
+                         "facebook (default: all)")
+    aa.add_argument("--library", default=None)
+
     args = p.parse_args()
 
     if args.cmd == "ingest":
@@ -380,7 +405,43 @@ def main() -> int:
         m = Manifest.load(Path(args.workspace) / args.job_id)
         print(json.dumps(json.loads(m.model_dump_json()), indent=2))
         return 0
+
+    if args.cmd == "audio":
+        return audio_command(args)
     return 2
+
+
+def audio_command(args) -> int:
+    from clipforge.audio.library import (
+        LIBRARY_FILE, add_file, default_library_dir, load_library,
+    )
+    root = Path(args.library) if args.library else default_library_dir()
+    if args.audio_cmd == "add":
+        split = lambda v: [x.strip() for x in v.split(",") if x.strip()]
+        try:
+            item = add_file(Path(args.file), args.kind, split(args.tags),
+                            args.license, args.source, args.attribution,
+                            split(args.platforms) or ["all"], root=root)
+        except ValueError as e:
+            print(f"AUDIO ADD FAILED: {e}", file=sys.stderr)
+            return 1
+        except OSError as e:
+            print(f"AUDIO ADD FAILED: could not copy the file "
+                  f"({e.strerror or 'I/O error'})", file=sys.stderr)
+            return 1
+        print(f"added {item.file} ({item.kind}, tags: {', '.join(item.tags)})")
+        return 0
+    lib = load_library(root)
+    if not lib.found:
+        print(f"No {LIBRARY_FILE} in {root}. Add a file with "
+              "`clipforge audio add` to create one; until then the built-in "
+              "sound effects are used and there is no music.")
+        return 0
+    sfx, music = len(lib.of_kind("sfx")), len(lib.of_kind("music"))
+    print(f"{root}: {sfx} sound effects, {music} music tracks usable")
+    for prob in lib.problems:
+        print(f"  problem: {prob}")
+    return 1 if lib.problems else 0
 
 
 if __name__ == "__main__":

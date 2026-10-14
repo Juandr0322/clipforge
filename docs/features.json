@@ -1051,8 +1051,8 @@
         "The layer never fails the render: if building or mixing it fails, the clip renders without it (keeping the other value-adds) and the report says why. Clips with no beats and no music render exactly as before, and tests/test_render.py and tests/test_originality.py pass unchanged (test)",
         "`clipforge audio check` validates the library and lists every problem; `clipforge audio add` copies in a file with its license and source (test)"
       ],
-      "passes": false,
-      "notes": "Diego 2026-10-14: added sound is an add-on layer and never replaces the original game audio or voice. Levels are relative to the clip's own measured level, then the whole mix is normalized to -14 LUFS. Settings are CLIPFORGE_* until recipe files (F31) exist, then they move into the gaming recipe. Licence notes for sources (researched 2026-10-14) are in docs/AUDIO_SOURCES.md. Trending sounds stay in-app.",
+      "passes": true,
+      "notes": "Diego 2026-10-14: added sound is an add-on layer and never replaces the original game audio or voice. Levels are relative to the clip's own measured level, then the whole mix is normalized to -14 LUFS. Settings are CLIPFORGE_* until recipe files (F31) exist, then they move into the gaming recipe. Licence notes for sources (researched 2026-10-14) are in docs/AUDIO_SOURCES.md. Trending sounds stay in-app. Built 2026-10-14 (PR, not merged): clipforge/audio/ (library, starter, layer), render_clip(audio_layer=...), report section audio_layer, `clipforge audio check|add`, tests/test_audio_layer.py (46 tests). tests/conftest.py points CLIPFORGE_AUDIO_LIBRARY at an empty temp folder for every test; tests/test_quality.py's concurrent-sections test now also covers the new section. Defaults: SFX on (-6 dB), music -20 dB with -6 dB ducking, capped at -6 dB. OPEN: Diego listens to a real gaming clip before merge; ffmpeg 8.x mixing confirmed by CI only.",
       "priority": 11
     },
     {

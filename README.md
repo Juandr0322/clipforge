@@ -33,7 +33,7 @@ ffmpeg + libass · FastAPI · Pydantic · pytest · GitHub Actions
 | 3. Highlight detection | Claude ranks clip candidates; few-shot library |
 | 4. Boundary refinement | sentence snap + silence-aware cuts |
 | 5. Visual reframing | face tracking -> smoothed 9:16 camera path |
-| 6. Render | dynamic crop, burned ASS captions, -14 LUFS, 1080x1920 |
+| 6. Render | dynamic crop, burned ASS captions, sound effects + quiet music bed on top of the original audio, -14 LUFS, 1080x1920 |
 | 7. Review UI | web app: approve/reject/trim, metrics, feedback export |
 
 ## Setup
@@ -86,6 +86,21 @@ python -m clipforge.cli status     <job>
 ```
 
 Outputs land in `workspace/<job>/renders/` (clips + QA contact sheets).
+
+### Sound effects and music
+
+Render adds sound effects on each clip's big moments and, when your library
+has a cleared track, a quiet music bed under the original audio (ducked
+while someone talks). The original game audio and voice always stay the
+main sound. Add files with their licence and source, then check the library:
+
+```bash
+python -m clipforge.cli audio add boom.wav --kind sfx --tags impact --license CC0 --source https://kenney.nl/assets/impact-sounds
+python -m clipforge.cli audio check
+```
+
+Where to get free files and what each licence allows: `docs/AUDIO_SOURCES.md`.
+Levels and on/off switches: the `CLIPFORGE_SFX*` / `CLIPFORGE_MUSIC*` lines in `.env.example`.
 
 ## The feedback loop
 
