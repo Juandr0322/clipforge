@@ -814,7 +814,7 @@ def test_readers_wait_for_a_writer_holding_the_job_lock(tmp_path):
         done["reviews"] = load_reviews(tmp_path)
         done["metrics"] = job_metrics(tmp_path)
 
-    with store._job_lock(tmp_path):
+    with store.job_lock(tmp_path):
         t = threading.Thread(target=read)
         t.start()
         started.wait(5)

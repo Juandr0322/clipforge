@@ -379,8 +379,8 @@ def test_finished_job_survives_a_broken_recipe_file(jobs, tmp_path, monkeypatch)
 def test_write_record_uses_unique_temp_and_retrying_replace(tmp_path, monkeypatch):
     import clipforge.recipes as R
     seen = []
-    real = R._replace_with_retry
-    monkeypatch.setattr(R, "_replace_with_retry",
+    real = R.replace_with_retry
+    monkeypatch.setattr(R, "replace_with_retry",
                         lambda t, d: (seen.append(t.name), real(t, d)))
     R.write_record(tmp_path, load_recipe("talk"))
     R.write_record(tmp_path, load_recipe("talk"))

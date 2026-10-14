@@ -59,8 +59,8 @@ MUSIC_FADE_OUT = 1.5
 LOOP_XFADE = 0.5
 MAX_MUSIC_DECODE = 900.0
 
-_TRUE = {"1", "true", "yes", "on"}
-_FALSE = {"0", "false", "no", "off", ""}
+TRUE_WORDS = {"1", "true", "yes", "on"}
+FALSE_WORDS = {"0", "false", "no", "off", ""}
 
 
 class LayerError(Exception):
@@ -72,7 +72,7 @@ def _flag(name: str, default: bool) -> bool:
     if raw is None:
         return default
     raw = raw.strip().lower()
-    return True if raw in _TRUE else False if raw in _FALSE else default
+    return True if raw in TRUE_WORDS else False if raw in FALSE_WORDS else default
 
 
 def _db_setting(name: str, default: float, lo: float, hi: float) -> float:

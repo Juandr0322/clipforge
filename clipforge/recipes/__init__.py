@@ -14,13 +14,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from clipforge.audio.layer import (MUSIC_MAX_DB, SFX_MAX_DB, AudioLayerConfig,
-                                   _FALSE, _TRUE)
-from clipforge.review.store import _replace_with_retry
+                                   FALSE_WORDS, TRUE_WORDS)
+from clipforge.review.store import replace_with_retry
 
 RECIPES_DIR = Path(__file__).parent / "files"
 RECORD_NAME = "recipe.json"
 DEFAULT_RECIPE = "talk"
-_FLAG_WORDS = _TRUE | _FALSE
+_FLAG_WORDS = TRUE_WORDS | FALSE_WORDS
 # (key, env var, lower bound, upper bound) for the dB settings
 _DB = (("sfx_level_db", "CLIPFORGE_SFX_LEVEL_DB", -40.0, SFX_MAX_DB),
        ("music_level_db", "CLIPFORGE_MUSIC_LEVEL_DB", -40.0, MUSIC_MAX_DB),
@@ -215,7 +215,7 @@ def write_record(job_dir: Path, recipe: Recipe) -> None:
         with open(tmp, "w", encoding="utf-8", newline="\n") as f:
             json.dump({"name": recipe.name, "version": recipe.version}, f, indent=2)
             f.write("\n")
-        _replace_with_retry(tmp, path)
+        replace_with_retry(tmp, path)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
