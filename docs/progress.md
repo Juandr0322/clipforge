@@ -2,6 +2,7 @@
 <!-- Newest entry at the top. The lead adds one entry per feature attempt.
      Every agent reads the top of this file first, so keep entries to 1–2 lines. -->
 
+- 2026-10-14 · plan · Diego's gaming test: picks good, edit weak (captions early, face cam only, dead air). New Phase 1 "edit quality, gaming first": F48 audio layer → F31 → F49 edit.json → F13/F50 captions → F51 dead air → F52 layouts; workspace UI next, plus F53 Edit tab. Roadmap F26–F46 ported from f25-bench; bench renumbered F47 (main's F25 is hook types). Next: F48.
 - 2026-10-14 · F12 · merged · context overlay (ASS, LLM text sanitised), punch-in zoom on the reaction peak following the face-tracked crop, optional end card, value_adds checklist in each report, hook text score counts the overlay; 5 CLIPFORGE_* settings. Review FAIL fixed (F11 interaction, -t changed plain renders). 570 tests + mock e2e OK. ffmpeg 8.x untested locally: CI must confirm. Next: F13/F14/F15.
 - 2026-10-14 · F11 · merged · refine cuts the preamble so the clip starts on the trigger sentence (falls back with trim_note), RefinedClip carries/clears the F10 times, hook_score (speech/motion/face/text, 0-100) written into each clip report and never fails the pipeline. Review PASS first round. 549 tests + mock e2e OK. F12 in review fix round.
 - 2026-10-14 · F25 · merged · hook_type gains `reaction` and `funny` (gaming streams); prompt list now generated from the HookType Literal so it can't drift. Review PASS first round. 532 tests + mock e2e OK. Next: F11 + F12 in parallel.
