@@ -40,3 +40,8 @@
 2026-10-14 | F09 | reviewer | MAJOR | builder committed 7 sandbox placeholder paths under .claude/ (git add -A)
 2026-10-14 | F09 | reviewer | MINOR | report temp file written without newline="\n" (CRLF on Windows); quality_job failure after RENDERED was silent
 2026-10-14 | F09 | reviewer | MINOR | open: private store helpers imported, duplicated fixture, stale reports after render --force, LF test only bites on Windows, corrupt-report recovery undecided
+2026-10-14 | F10 | reviewer | MAJOR | round 1: unhashable hook_type (list/dict) raised TypeError out of the parser and failed the whole stage
+2026-10-14 | F10 | reviewer | MINOR | round 1: 10**400 OverflowError; stranger_check not stored per SPEC; context_setup empty first line; candidates.json saved with CRLF on Windows; tests missed junk-type cases
+2026-10-14 | F10 | reviewer | MAJOR | round 2: >4300-digit int (ValueError) and 100k-deep JSON (RecursionError) still crashed the stage and skipped the raw-reply save
+2026-10-14 | F10 | reviewer | MINOR | round 2: {"pass":null,"passed":false} passed; "start":true accepted; duplicate rejects across overlapping chunks
+2026-10-14 | F10 | reviewer | MINOR | open: reject dedup by 50% overlap; moment can be in candidates and rejected; rejected ignores min_score; "score":true and "hook":null; refine doesn't remap new times

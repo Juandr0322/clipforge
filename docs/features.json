@@ -323,8 +323,8 @@
         "A v1 candidates.json fixture without the new fields still loads, and the refine/render tests pass unchanged (test)",
         "MockHighlighter fills every new field deterministically, so a mock pipeline run gives candidates.json entries with trigger_t <= reaction_peak_t <= payoff_end_t inside each clip (test)"
       ],
-      "passes": false,
-      "notes": "Bump CandidateSet.schema_version to 2; all new fields are optional. Tests must never call the real Claude API."
+      "passes": true,
+      "notes": "Follow-ups: refine (F11) must remap trigger_t/reaction_peak_t/payoff_end_t when it moves start/end; schema_version stays 1 when a v1 file is re-saved; 'score': true/'50.5' and 'hook': null handling (already on main); rejected moments are deduped by the 50% overlap rule and a moment can appear in both candidates and rejected if overlapping chunks disagree; HOOK_TYPES vocabulary (bold_claim, question, story_open, contrarian, number, reveal, emotion, other) was chosen by the builder, reuse it for reference clips. Bump CandidateSet.schema_version to 2; all new fields are optional. Tests must never call the real Claude API."
     },
     {
       "id": "F11",
