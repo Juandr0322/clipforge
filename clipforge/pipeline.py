@@ -100,6 +100,14 @@ def run_pipeline(job_dir: Path, cfg: PipelineConfig,
     except Exception:  # noqa: BLE001 - reports must not fail a rendered job
         print("quality reports could not be written; "
               "re-run the pipeline to retry", file=sys.stderr)
+    try:
+        from clipforge.quality.run import hook_scores_job
+        from clipforge.reframe.detect import get_detector
+        hook_scores_job(job_dir, get_detector(cfg.detector),
+                        captions=cfg.captions)
+    except Exception:  # noqa: BLE001 - best effort, like the reports
+        print("hook scores could not be computed; "
+              "re-run the pipeline to retry", file=sys.stderr)
 
     progress("done")
     return m
