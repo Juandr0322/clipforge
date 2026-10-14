@@ -10,7 +10,10 @@ professional cut points:
   2. LENGTH ENFORCE — trim trailing sentences if too long; grow by adjacent
      sentences if too short. If constraints can't be met, reject the
      candidate (recorded, not crashed).
-  3. SILENCE-AWARE CUT — the physical cut lands in the word gap around the
+  3. HOOK-FIRST TRIM — when the candidate names a trigger_t, drop the
+     preamble sentences before the one containing it (unless that breaks
+     the length limits or the payoff; then the start stays, with a reason).
+  4. SILENCE-AWARE CUT — the physical cut lands in the word gap around the
      sentence span, at the quietest instant (EnergyProfile) or the gap
      midpoint as fallback, never within GUARD_SEC of a spoken word.
 
@@ -18,6 +21,7 @@ Hard invariant, checked at the end: NO WORD STRADDLES A CUT.
 """
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Optional
 
@@ -49,11 +53,24 @@ class RefinedClip(BaseModel):
     type: str
     n_words: int
     segment_ids: list[int]
+    # Optional moment times (absolute s), always inside [start, end], in order.
+    trigger_t: Optional[float] = None
+    reaction_peak_t: Optional[float] = None
+    payoff_end_t: Optional[float] = None
+    trim_note: Optional[str] = None   # why the preamble was kept, if it was
 
     @model_validator(mode="after")
     def _valid(self):
         if not (self.start <= self.speech_start < self.speech_end <= self.end):
             raise ValueError(f"clip {self.id}: cut/speech ordering broken")
+        last = self.start
+        for name in ("trigger_t", "reaction_peak_t", "payoff_end_t"):
+            v = getattr(self, name)
+            if v is None:
+                continue
+            if not (last <= v <= self.end):
+                raise ValueError(f"clip {self.id}: {name} outside clip/order")
+            last = v
         return self
 
     @property
@@ -160,6 +177,48 @@ def _assert_no_straddle(t: Transcript, cut: float) -> None:
                 f"[{w.start:.3f},{w.end:.3f}]")
 
 
+def _remap_times(cand: ClipCandidate, start: float, end: float) -> dict:
+    """Keep only the trigger/peak/payoff times that still lie inside the
+    refined [start, end] and in order; clear the rest."""
+    out, last = {}, start
+    for name in ("trigger_t", "reaction_peak_t", "payoff_end_t"):
+        v = getattr(cand, name)
+        if v is not None and math.isfinite(v) and last <= v <= end:
+            out[name] = v
+            last = v
+        else:
+            out[name] = None
+    return out
+
+
+def _hook_first(cand: ClipCandidate, segs: list[Segment], min_sec: float,
+                max_sec: float) -> tuple[Optional[list[Segment]], Optional[str]]:
+    """Drop preamble sentences before the one containing trigger_t.
+    `segs` are the candidate's overlapping sentences, before length
+    enforcement. Returns (segments, None) when trimmed, (None, note) when a
+    preamble exists but the start must stay, and (None, None) when there is
+    nothing to do."""
+    trig = cand.trigger_t
+    if trig is None or not math.isfinite(trig):
+        return None, None
+    k = next((i for i, s in enumerate(segs) if s.end >= trig), None)
+    if k is None:
+        return None, "trigger_t is after the clip; start kept"
+    if k == 0:
+        return None, None
+    pre = segs[k:]
+    while len(pre) > 1 and pre[-1].end - pre[0].start > max_sec:
+        pre = pre[:-1]
+    if pre[-1].end - pre[0].start > max_sec:
+        return None, "cutting the preamble would break the length limit; start kept"
+    if pre[-1].end - pre[0].start < min_sec:
+        return None, "cutting the preamble would make the clip too short; start kept"
+    if cand.payoff_end_t is not None and math.isfinite(cand.payoff_end_t) \
+            and pre[-1].end < cand.payoff_end_t - 1e-3:
+        return None, "cutting the preamble would end the clip before the payoff; start kept"
+    return pre, None
+
+
 def refine_candidate(cand: ClipCandidate, t: Transcript,
                      energy: Optional[EnergyProfile],
                      min_sec: float = MIN_CLIP_SEC,
@@ -174,7 +233,8 @@ def refine_candidate(cand: ClipCandidate, t: Transcript,
     if not segs:
         raise RefineReject("candidate overlaps no transcript segments")
 
-    segs = _enforce_length(segs, t.segments, min_sec, max_sec)
+    trimmed, trim_note = _hook_first(cand, segs, min_sec, max_sec)
+    segs = trimmed or _enforce_length(segs, t.segments, min_sec, max_sec)
 
     seg_words = t.words_between(segs[0].start - 1e-3, segs[-1].end + 1e-3)
     if not seg_words:
@@ -196,6 +256,8 @@ def refine_candidate(cand: ClipCandidate, t: Transcript,
         score=cand.score, hook=cand.hook, type=cand.type,
         n_words=len(seg_words),
         segment_ids=[s.id for s in segs],
+        trim_note=trim_note,
+        **_remap_times(cand, round(start_cut, 3), round(end_cut, 3)),
     )
 
 
