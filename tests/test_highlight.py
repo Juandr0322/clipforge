@@ -238,16 +238,18 @@ from clipforge.highlight.backends import (  # noqa: E402
 
 
 class FakeClient:
-    """Records messages.create kwargs; replies come from a list (last repeats)."""
-    def __init__(self, replies):
-        self.replies, self.calls = list(replies), []
+    """Records messages.create kwargs; replies come from a list (last repeats).
+    `usage`, when given, is attached to every reply like the SDK's Usage."""
+    def __init__(self, replies, usage=None):
+        self.replies, self.calls, self.usage = list(replies), [], usage
         self.messages = self
 
     def create(self, **kw):
         self.calls.append(kw)
         r = self.replies.pop(0) if len(self.replies) > 1 else self.replies[0]
         return types.SimpleNamespace(
-            content=[types.SimpleNamespace(type="text", text=r)])
+            content=[types.SimpleNamespace(type="text", text=r)],
+            usage=self.usage)
 
 
 GOOD = json.dumps([{"start": 0, "end": 30, "score": 90, "hook": "h",
@@ -411,3 +413,99 @@ def test_stale_unlink_failure_does_not_fail_stage(
     err = capsys.readouterr().err
     assert "could not remove highlight_raw_chunk_000.txt" in err
     assert str(tmp_path) not in err
+
+
+# ------------------------------------------------- token usage log (F25)
+
+from clipforge.highlight.backends import USAGE_FIELDS, USAGE_NAME  # noqa: E402
+
+
+def _usage(**kw):
+    """A reply's usage like the SDK's: every field present, some None."""
+    return types.SimpleNamespace(**{f: kw.get(f) for f in USAGE_FIELDS})
+
+
+def test_usage_fields_match_real_sdk():
+    from anthropic.types import Usage
+    assert set(USAGE_FIELDS) <= set(Usage.model_fields)
+
+
+def test_usage_summed_over_every_chunk():
+    t = make_transcript(duration=3600.0)
+    n = len(chunk_transcript(t))
+    assert n > 1
+    h = AnthropicHighlighter(client=FakeClient(
+        [GOOD], usage=_usage(input_tokens=100, output_tokens=20,
+                             cache_read_input_tokens=5)))
+    h.find_highlights(t)
+    rec = h.usage_record()
+    assert rec["model"] == "claude-sonnet-4-6"
+    assert rec["engine"] == "anthropic/claude-sonnet-4-6"
+    assert rec["calls"] == n
+    assert rec["input_tokens"] == 100 * n
+    assert rec["output_tokens"] == 20 * n
+    assert rec["cache_read_input_tokens"] == 5 * n
+    assert rec["cache_creation_input_tokens"] == 0      # None counts as 0
+
+
+def test_usage_resets_between_runs():
+    t = make_transcript(duration=900.0)
+    h = AnthropicHighlighter(client=FakeClient(
+        [GOOD], usage=_usage(input_tokens=10)))
+    h.find_highlights(t)
+    first = h.usage_record()
+    h.find_highlights(t)
+    assert h.usage_record() == first
+
+
+def test_reply_without_usage_counts_zero():
+    h = AnthropicHighlighter(client=FakeClient([GOOD]))   # usage=None
+    h.analyze_chunk(_chunk(), 100.0)
+    rec = h.usage_record()
+    assert all(rec[f] == 0 for f in USAGE_FIELDS)
+
+
+def test_stage_writes_usage_file_for_mock(transcribed_job, tmp_path):
+    job = _stage_job(transcribed_job, tmp_path)
+    highlight_job(job, MockHighlighter(), force=True)
+    rec = json.loads((job / USAGE_NAME).read_text(encoding="utf-8"))
+    assert rec["engine"] == "mock" and rec["model"] is None
+    assert rec["calls"] >= 1
+    assert all(rec[f] == 0 for f in USAGE_FIELDS)
+
+
+def test_forced_rerun_replaces_stale_usage(transcribed_job, tmp_path):
+    job = _stage_job(transcribed_job, tmp_path)
+    (job / USAGE_NAME).write_text('{"engine": "old"}', encoding="utf-8")
+    highlight_job(job, MockHighlighter(), force=True)
+    rec = json.loads((job / USAGE_NAME).read_text(encoding="utf-8"))
+    assert rec["engine"] == "mock"
+
+
+def test_usage_write_failure_does_not_fail_stage(
+        transcribed_job, tmp_path, capsys):
+    job = _stage_job(transcribed_job, tmp_path)
+    (job / USAGE_NAME).unlink(missing_ok=True)
+    (job / USAGE_NAME).mkdir()      # a directory: neither removable nor writable
+    m = highlight_job(job, MockHighlighter(), force=True)
+    assert m.stage == Stage.CANDIDATES_READY
+    assert not Manifest.load(job).history[-1].error
+    assert (job / "candidates.json").exists()
+    assert not list(job.glob(f".{USAGE_NAME}.*.tmp"))
+    err = capsys.readouterr().err
+    assert f"could not write {USAGE_NAME}" in err
+    assert str(tmp_path) not in err
+
+
+def test_usage_kept_when_stage_fails(transcribed_job, tmp_path):
+    class SpendsThenFails(MockHighlighter):
+        def analyze_chunk(self, chunk, source_duration):
+            self.add_usage(_usage(input_tokens=7, output_tokens=3))
+            raise RuntimeError("model fell over")
+
+    job = _stage_job(transcribed_job, tmp_path)
+    with pytest.raises(RuntimeError):
+        highlight_job(job, SpendsThenFails(), force=True)
+    rec = json.loads((job / USAGE_NAME).read_text(encoding="utf-8"))
+    assert rec["input_tokens"] == 7 and rec["output_tokens"] == 3
+    assert Manifest.load(job).failed_stage == Stage.CANDIDATES_READY

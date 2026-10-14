@@ -4,6 +4,7 @@ ClipForge CLI.
 Usage:
     python -m clipforge.cli ingest <video-file> [--workspace DIR] [--force]
     python -m clipforge.cli status <job-id>    [--workspace DIR]
+    python -m clipforge.cli bench init|run|report [--bench-dir DIR] [--only NAME ...]
 """
 import argparse
 import datetime
@@ -207,6 +208,16 @@ def main() -> int:
     ps.add_argument("job_id")
     ps.add_argument("--workspace", default=str(DEFAULT_WS))
 
+    pb = sub.add_parser(
+        "bench", help="Benchmark: run the fixed video set, compare runs")
+    pb.add_argument("action", choices=["init", "run", "report"])
+    pb.add_argument("--bench-dir", default=None,
+                    help="default: $CLIPFORGE_BENCH_DIR, else "
+                         "clipforge-bench in your home folder")
+    pb.add_argument("--workspace", default=str(DEFAULT_WS))
+    pb.add_argument("--only", nargs="+", default=None, metavar="NAME",
+                    help="run just these bench.json entries")
+
     args = p.parse_args()
 
     if args.cmd == "ingest":
@@ -380,7 +391,54 @@ def main() -> int:
         m = Manifest.load(Path(args.workspace) / args.job_id)
         print(json.dumps(json.loads(m.model_dump_json()), indent=2))
         return 0
+
+    if args.cmd == "bench":
+        return run_bench_command(args)
     return 2
+
+
+def run_bench_command(args) -> int:
+    from clipforge import bench
+    bench_dir = bench.resolve_bench_dir(args.bench_dir)
+
+    if args.action == "init":
+        path, created = bench.init_bench(bench_dir)
+        if created:
+            print(f"Created {path}\nPut your benchmark videos in {bench_dir}, "
+                  f"edit {bench.CONFIG_NAME} to match, then run "
+                  "`python -m clipforge.cli bench run`.")
+        else:
+            print(f"{path} already exists; left it as it is.")
+        return 0
+
+    workspace = Path(args.workspace)
+    if args.action == "report":
+        bench.write_results(bench_dir, workspace)
+        rows = bench.build_rows(bench_dir, workspace)
+        print("\n".join(bench.compare_latest(rows)))
+        print(f"results: {bench_dir / bench.RESULTS_NAME}")
+        return 0
+
+    # run
+    problem = ffmpeg_problem()
+    if problem:
+        print(f"BENCH FAILED: {problem}", file=sys.stderr)
+        return 2
+    report_ffmpeg()
+    from clipforge.pipeline import PipelineConfig
+    try:
+        record = bench.run_bench(bench_dir, workspace, PipelineConfig(),
+                                 only=args.only)
+    except bench.BenchConfigError as e:
+        print(f"BENCH FAILED: {e}", file=sys.stderr)
+        return 2
+    rows = bench.build_rows(bench_dir, workspace)
+    print("\n".join(bench.compare_latest(rows)))
+    print(f"run file: {bench_dir / bench.RUNS_DIR / (record['run_id'] + '.json')}")
+    print("Review the bench jobs on the review website, then run "
+          "`bench report` to add approval rates.")
+    bad = [v for v in record["videos"] if v["status"] in ("failed", "missing")]
+    return 1 if bad else 0
 
 
 if __name__ == "__main__":
