@@ -10,7 +10,9 @@ from clipforge.highlight.backends import (
 )
 from clipforge.highlight.chunker import Chunk, chunk_transcript
 from clipforge.highlight.run import HighlightError, highlight_job
-from clipforge.highlight.schema import CandidateSet, ClipCandidate, dedup
+from clipforge.highlight.schema import (
+    CandidateSet, ClipCandidate, RejectedCandidate, dedup,
+)
 from clipforge.ingest.ingest import ingest
 from clipforge.transcribe.backends import MockTranscriber
 from clipforge.transcribe.run import transcribe_job
@@ -512,3 +514,124 @@ def test_mock_pipeline_run_writes_v2_candidates(transcribed_job, tmp_path):
     for c in data["candidates"]:
         assert (c["start"] <= c["trigger_t"] <= c["reaction_peak_t"]
                 <= c["payoff_end_t"] <= c["end"])
+
+
+# ------------------------------------------------------- F10 review fixes
+
+JUNK = [None, [], {}, [1], {"a": 1}, 7, -1.5, True, "", "x\ny", 10 ** 400,
+        float("nan"), float("inf")]
+
+
+def _dumps(d):
+    return json.dumps([d])  # allow_nan default: emits NaN/Infinity
+
+
+def _base(**kw):
+    d = {"start": 100, "end": 130, "score": 80, "hook": "h", "reason": "r",
+         "type": "story"}
+    d.update(kw)
+    return d
+
+
+@pytest.mark.parametrize("junk", JUNK, ids=repr)
+@pytest.mark.parametrize("field", ["trigger_t", "reaction_peak_t",
+                                   "payoff_end_t", "context_setup",
+                                   "hook_type", "stranger_check", "type",
+                                   "hook", "reason"])
+def test_junk_in_any_field_never_raises_and_keeps_candidate(field, junk):
+    out = _parse(_dumps(_base(**{field: junk})))
+    assert len(out) == 1
+    ClipCandidate(id=0, **{k: v for k, v in out[0].items()
+                           if k != "stranger_fail_reason"})
+
+
+@pytest.mark.parametrize("field", ["start", "end", "score"])
+@pytest.mark.parametrize("junk", [None, [], {}, "x", 10 ** 400,
+                                  float("nan"), float("inf")], ids=repr)
+def test_junk_start_end_score_drops_entry_without_raising(field, junk):
+    out = _parse(_dumps(_base(**{field: junk})))
+    if field == "score" and junk == 10 ** 400:
+        assert [c["score"] for c in out] == [100]  # huge int clamps, as before
+    else:
+        assert out == []
+
+
+@pytest.mark.parametrize("ht", [[], {}, 5, ["a"]])
+def test_hook_type_unhashable_or_wrong_type_becomes_other(ht):
+    (c,) = _parse(_dumps(_base(hook_type=ht, type=ht)))
+    assert c["hook_type"] == "other" and c["type"] == "other"
+
+
+def test_hook_type_null_stays_absent():
+    (c,) = _parse(_item(hook_type=None))
+    assert "hook_type" not in c
+
+
+def test_num_rejects_bad_numbers():
+    from clipforge.highlight.backends import _num
+    for bad in (10 ** 400, True, False, float("nan"), float("inf"),
+                float("-inf"), "5", None):
+        assert _num(bad) is None
+    assert _num(5) == 5.0
+
+
+@pytest.mark.parametrize("sc,fails", [
+    (False, True), (0, True), ("false", True), ("No", True), ("FAIL", True),
+    ({"pass": False}, True), ({"pass": "false"}, True), ({"pass": 0}, True),
+    ({"passed": False}, True), ({"passed": "no"}, True),
+    (True, False), (1, False), ("yes", False), ({"pass": True}, False),
+    ({"passed": "true"}, False),
+    ([], False), ("maybe", False), ({}, False), ({"pass": []}, False),
+    (None, False),
+])
+def test_stranger_check_shapes(sc, fails):
+    (c,) = _parse(_item(stranger_check=sc))
+    assert ("stranger_fail_reason" in c) is fails
+
+
+def test_missing_stranger_check_passes_and_is_absent():
+    (c,) = _parse(_item())
+    assert "stranger_fail_reason" not in c and "stranger_check" not in c
+
+
+def test_stranger_check_stored_for_passing_candidate():
+    (c,) = _parse(_item(stranger_check={"pass": True,
+                                        "reason": "\n\nSelf-contained\nmore"}))
+    assert c["stranger_check"] == {"pass": True, "reason": "Self-contained"}
+    assert ClipCandidate(id=0, **c).stranger_check.passed is True
+
+
+def test_context_setup_uses_first_non_empty_line():
+    (c,) = _parse(_item(context_setup="\n  \n  the bet \n second"))
+    assert c["context_setup"] == "the bet"
+
+
+def test_save_writes_lf_newlines(monkeypatch, tmp_path):
+    seen = {}
+    real = Path.write_text
+
+    def spy(self, data, *a, **kw):
+        seen.update(kw)
+        return real(self, data, *a, **kw)
+    monkeypatch.setattr(Path, "write_text", spy)
+    CandidateSet(engine="x", source_duration_sec=60.0).save(
+        tmp_path / "c.json")
+    assert seen.get("newline") == "\n" and seen.get("encoding") == "utf-8"
+    assert b"\r\n" not in (tmp_path / "c.json").read_bytes()
+
+
+def test_save_load_roundtrip_rejected_and_stranger_check(tmp_path):
+    cs = CandidateSet(
+        engine="x", source_duration_sec=100.0,
+        candidates=[ClipCandidate(
+            id=0, start=10, end=40, score=80, hook="h", reason="r",
+            stranger_check={"pass": True, "reason": "claro, sin contexto ñ"})],
+        rejected=[RejectedCandidate(start=50, end=80, hook="¿qué?",
+                                    reason="necesita contexto: café")])
+    p = tmp_path / "c.json"
+    cs.save(p)
+    raw = json.loads(p.read_text(encoding="utf-8"))
+    assert raw["candidates"][0]["stranger_check"]["pass"] is True
+    back = CandidateSet.load(p)
+    assert back == cs
+    assert back.rejected[0].reason == "necesita contexto: café"

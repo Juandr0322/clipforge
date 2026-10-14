@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import abc
 import json
+import math
 import os
 import re
 import sys
@@ -122,7 +123,9 @@ def parse_llm_response(text: str, chunk: Chunk,
             start = float(item["start"])
             end = float(item["end"])
             score = int(item["score"])
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        if not (math.isfinite(start) and math.isfinite(end)):
             continue
         # clamp into chunk and source bounds
         start = max(start, 0.0)
@@ -142,17 +145,68 @@ def parse_llm_response(text: str, chunk: Chunk,
             "start": round(start, 3), "end": round(end, 3), "score": score,
             "hook": str(item.get("hook", ""))[:300],
             "reason": str(item.get("reason", ""))[:300],
-            "type": ctype if ctype in valid_types else "other",
+            "type": (ctype if isinstance(ctype, str) and ctype in valid_types
+                     else "other"),
             **extra,
         })
     return out
 
 
 def _num(v):
+    """Finite real number or None (bool, NaN, Infinity, huge ints, junk)."""
     if isinstance(v, bool) or not isinstance(v, (int, float)):
         return None
-    v = float(v)
-    return v if v == v and abs(v) != float("inf") else None
+    try:
+        v = float(v)
+    except OverflowError:
+        return None
+    return v if math.isfinite(v) else None
+
+
+def _first_line(v, limit: int) -> str:
+    """First non-empty line of a string, whitespace-collapsed, truncated."""
+    if not isinstance(v, str):
+        return ""
+    for line in v.splitlines():
+        line = " ".join(line.split())
+        if line:
+            return line[:limit]
+    return ""
+
+
+_FAIL_WORDS = {"false", "no", "fail"}
+_PASS_WORDS = {"true", "yes", "pass"}
+
+
+def _scalar_verdict(v) -> bool | None:
+    """True/False for a recognisable pass/fail value, else None."""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return v != 0 if _num(v) is not None else None
+    if isinstance(v, str):
+        w = v.strip().lower()
+        if w in _FAIL_WORDS:
+            return False
+        if w in _PASS_WORDS:
+            return True
+    return None
+
+
+def _stranger(sc) -> tuple[bool, str] | None:
+    """
+    Stranger check verdict as (passed, reason), or None when the check is
+    missing or unrecognisable. FAIL means: pass is False, 0, or one of the
+    strings "false"/"no"/"fail" (case-insensitive), as a bare value or as
+    {"pass": ...} / {"passed": ...}. Missing or unrecognisable shapes keep
+    the candidate: a sloppy reply must not silently discard a good clip.
+    """
+    reason = ""
+    if isinstance(sc, dict):
+        reason = _first_line(sc.get("reason"), 300)
+        sc = sc["pass"] if "pass" in sc else sc.get("passed")
+    verdict = _scalar_verdict(sc)
+    return None if verdict is None else (verdict, reason)
 
 
 def _parse_v2(item: dict, start: float, end: float) -> dict:
@@ -166,25 +220,19 @@ def _parse_v2(item: dict, start: float, end: float) -> dict:
         out.update(trigger_t=round(times[0], 3),
                    reaction_peak_t=round(times[1], 3),
                    payoff_end_t=round(times[2], 3))
-    ctx = item.get("context_setup")
-    if isinstance(ctx, str) and ctx.strip():
-        out["context_setup"] = " ".join(ctx.split("\n")[0].split())[:200] \
-            or None
-        if out["context_setup"] is None:
-            del out["context_setup"]
-    if "hook_type" in item:
-        ht = item["hook_type"]
-        out["hook_type"] = ht if ht in HOOK_TYPES else "other"
-    sc = item.get("stranger_check")
-    passed, reason = True, ""
-    if isinstance(sc, dict):
-        passed = sc.get("pass", sc.get("passed", True)) is not False
-        reason = str(sc.get("reason", ""))
-    elif isinstance(sc, bool):
-        passed = sc
-    if not passed:
-        out["stranger_fail_reason"] = (
-            reason.strip()[:300] or "failed stranger check")
+    ctx = _first_line(item.get("context_setup"), 200)
+    if ctx:
+        out["context_setup"] = ctx
+    ht = item.get("hook_type")
+    if ht is not None:  # explicit null leaves the field absent
+        out["hook_type"] = ht if isinstance(ht, str) and ht in HOOK_TYPES \
+            else "other"
+    verdict = _stranger(item.get("stranger_check"))
+    if verdict is not None:
+        passed, reason = verdict
+        out["stranger_check"] = {"pass": passed, "reason": reason}
+        if not passed:
+            out["stranger_fail_reason"] = reason or "failed stranger check"
     return out
 
 
