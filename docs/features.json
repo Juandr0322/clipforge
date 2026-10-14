@@ -370,8 +370,8 @@
         "Every rendered clip's report has hook_score: a 0-100 total plus four sub-scores (speech in second 1, motion in second 1, face visible, on-screen text in the first 3 s), each with a one-line reason (mock pipeline test)",
         "Sub-scores respond to their signals: first word at 0.2 s scores higher speech than first word at 2.5 s; a moving testsrc scores higher motion than a static color clip; a scripted MockDetector face gives a full face score and no face gives 0; captions disabled with no overlay gives text score 0 (tests with synthetic inputs)"
       ],
-      "passes": false,
-      "notes": "Compute the on-screen-text sub-score from what the pipeline itself puts on screen (captions, plus the F12 overlay when present). No OCR needed. Synthetic test videos must be 12 s or shorter."
+      "passes": true,
+      "notes": "Follow-ups: when the payoff would be lost, _hook_first keeps the original start but _enforce_length can still cut the payoff (trim anyway or reject); get_detector is built on every run_pipeline call even when all clips already have a hook_score; motion score counts burned-in caption changes; weights (speech 30/motion 20/face 25/text 25) are uncalibrated; the F12 overlay span is wired into the text score by F12. Compute the on-screen-text sub-score from what the pipeline itself puts on screen (captions, plus the F12 overlay when present). No OCR needed. Synthetic test videos must be 12 s or shorter."
     },
     {
       "id": "F12",

@@ -46,3 +46,5 @@
 2026-10-14 | F10 | reviewer | MINOR | round 2: {"pass":null,"passed":false} passed; "start":true accepted; duplicate rejects across overlapping chunks
 2026-10-14 | F10 | reviewer | MINOR | open: reject dedup by 50% overlap; moment can be in candidates and rejected; rejected ignores min_score; "score":true and "hook":null; refine doesn't remap new times
 2026-10-14 | F25 | reviewer | MINOR | prompt's general HOOK bullet still describes only spoken hooks (open); funny now in both hook_type and ClipType
+2026-10-14 | F11 | reviewer | MINOR | open: payoff can still be cut when preamble trim is refused (_enforce_length caps from an earlier start); get_detector built on every pipeline run even with no work; motion score counts caption pixels
+2026-10-14 | F11 | reviewer | QUESTION | text sub-score ignored the F12 overlay (wired in F12 round 1)
