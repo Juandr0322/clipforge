@@ -1,0 +1,8 @@
+{
+  "name": "talking_head",
+  "version": 1,
+  "description": "One person talking to camera: same settings as talk for now.",
+  "min_score": 55,
+  "max_candidates": 12,
+  "captions": true
+}

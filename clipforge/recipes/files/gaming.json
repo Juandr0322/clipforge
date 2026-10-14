@@ -1,0 +1,16 @@
+{
+  "name": "gaming",
+  "version": 1,
+  "description": "Gaming streams: talk defaults plus a quiet sound-effect and music layer over the original game audio and voice.",
+  "min_score": 55,
+  "max_candidates": 12,
+  "captions": true,
+  "audio": {
+    "sfx": true,
+    "music": true,
+    "sfx_level_db": -6,
+    "music_level_db": -20,
+    "music_duck_db": -6,
+    "music_tags": ["gaming"]
+  }
+}

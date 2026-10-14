@@ -378,7 +378,18 @@ def main() -> int:
             return 2
         report_ffmpeg()
         from clipforge.pipeline import PipelineConfig, run_pipeline
-        m = run_pipeline(Path(args.workspace) / args.job_id, PipelineConfig())
+        from clipforge.recipes import RecipeError, recipe_problem
+        problem = recipe_problem()
+        if problem:
+            print(f"PIPELINE FAILED: {problem}", file=sys.stderr)
+            return 2
+        try:
+            m = run_pipeline(Path(args.workspace) / args.job_id,
+                             PipelineConfig())
+        except RecipeError:
+            print("PIPELINE FAILED: the recipe could not be loaded "
+                  "(details above)", file=sys.stderr)
+            return 2
         print(f"job {m.job_id} -> {m.stage.value}")
         return 0
 
@@ -386,6 +397,11 @@ def main() -> int:
         problem = port_problem(args.host, args.port)
         if problem:
             print(problem, file=sys.stderr)
+            return 2
+        from clipforge.recipes import recipe_problem
+        problem = recipe_problem()
+        if problem:
+            print(f"SERVE FAILED: {problem}", file=sys.stderr)
             return 2
         warning = ffmpeg_problem()
         if warning:

@@ -1,0 +1,8 @@
+{
+  "name": "talk",
+  "version": 1,
+  "description": "Interviews, podcasts and talks: the default behaviour.",
+  "min_score": 55,
+  "max_candidates": 12,
+  "captions": true
+}
