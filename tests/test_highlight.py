@@ -1080,5 +1080,22 @@ def test_times_cut_off_by_the_trim_are_dropped_not_clamped():
 def test_ron_fixtures_are_the_exact_raw_replies():
     """Fixtures are byte-copies of the raw replies of bench run
     bench-20261014-210447-ron (highlight_raw_chunk_000/001.txt), not hand-built."""
-    assert _ron(0).startswith('[{"start": 245, "end": 400')
-    assert _ron(1).startswith('[{"start": 1501.5, "end": 1800.3')
+    import hashlib
+    for n, want in ((0, "8d6dd3e42eeb7dacf4d8c1a37e3f097b5fc01a394b71004570518e40d53fddc0"),
+                    (1, "9c1a61316797a85ede4d67fab4c5a73eade09005b4e0c2e3226be3ae32a417aa")):
+        raw = (RON / f"ron_reply_chunk_{n:03d}.json").read_bytes()
+        assert hashlib.sha256(raw).hexdigest() == want
+
+
+def test_normal_length_keeps_times_with_more_than_3_decimals():
+    text = ('[{"start": 10.0004, "end": 60.0004, "score": 80, "hook": "h", '
+            '"reason": "r", "trigger_t": 10.0004, "reaction_peak_t": 30.00049, '
+            '"payoff_end_t": 60.0004}]')
+    (c,) = parse_llm_response(text, CHUNK, 1000)
+    assert c["trigger_t"] == 10.0 and c["payoff_end_t"] == 60.0
+
+
+def test_trimmed_clip_is_never_longer_than_the_cap():
+    for s in (10.0005, 10.0015, 10.0025, 10.0035):
+        (c,), _ = _one(s, s + 300)
+        assert c["end"] - c["start"] <= MAX_CLIP_SEC

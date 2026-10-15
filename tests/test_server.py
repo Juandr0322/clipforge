@@ -857,3 +857,47 @@ def test_job_with_clips_or_unfinished_has_no_warning(fresh, source_video):
     assert detail["clips"] and detail["warning"] is None
     assert client.get("/api/jobs").json()[0]["warning"] is None
 
+
+
+def test_failed_zero_clip_job_has_no_warning(tmp_path):
+    from clipforge.common.manifest import Manifest, Stage
+    ws = tmp_path / "ws"
+    client = TestClient(create_app(ws, config=MOCK_CFG, sync_pipeline=True))
+    d = _finished_job(ws, "job-failed")
+    m = Manifest.load(d)
+    m.failed_stage = Stage.RENDERED
+    m.error = "boom"
+    m.save(d)
+    assert client.get("/api/jobs/job-failed").json()["warning"] is None
+    (listed,) = [j for j in client.get("/api/jobs").json()
+                 if j["job_id"] == "job-failed"]
+    assert listed["warning"] is None
+
+
+def test_running_zero_clip_job_has_no_warning_until_it_finishes(
+        tmp_path, monkeypatch):
+    """Through the real rerun route: `running` is a closure, so the pipeline
+    is replaced by one that blocks until released."""
+    import threading
+    import time
+    import clipforge.server.app as appmod
+    from clipforge.highlight.schema import ZERO_CLIPS_WARNING
+    ws = tmp_path / "ws"
+    gate = threading.Event()
+    monkeypatch.setattr(appmod, "run_pipeline",
+                        lambda *a, **k: gate.wait(30))
+    client = TestClient(create_app(ws, config=MOCK_CFG, sync_pipeline=False))
+    _finished_job(ws, "job-busy")
+    assert client.post("/api/jobs/job-busy/rerun").status_code == 200
+    try:
+        detail = client.get("/api/jobs/job-busy").json()
+        assert detail["running"] is True and detail["warning"] is None
+        (listed,) = client.get("/api/jobs").json()
+        assert listed["running"] is True and listed["warning"] is None
+    finally:
+        gate.set()
+    for _ in range(100):
+        if not client.get("/api/jobs/job-busy").json()["running"]:
+            break
+        time.sleep(0.05)
+    assert client.get("/api/jobs/job-busy").json()["warning"] == ZERO_CLIPS_WARNING

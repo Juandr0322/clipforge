@@ -215,6 +215,8 @@ def parse_llm_response(text: str, chunk: Chunk,
         trimmed = dur > MAX_CLIP_SEC
         if trimmed:
             start, end = _trim_window(start, end, item)
+            start = round(start, 3)
+            end = min(round(end, 3), start + MAX_CLIP_SEC)  # no 90.001 s
             if end - start < MIN_CLIP_SEC:
                 st["dropped_length"] += 1
                 continue
@@ -223,7 +225,7 @@ def parse_llm_response(text: str, chunk: Chunk,
         ctype = item.get("type", "other")
         extra = _parse_v2(item, *full)   # times are checked against the reply
         for k in ("trigger_t", "reaction_peak_t", "payoff_end_t"):
-            if k in extra and not start <= extra[k] <= end:
+            if trimmed and k in extra and not start <= extra[k] <= end:
                 del extra[k]             # cut off by the trim: not invented
         out.append({
             "start": round(start, 3), "end": round(end, 3), "score": score,
