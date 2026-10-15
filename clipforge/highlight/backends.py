@@ -28,6 +28,12 @@ from clipforge.transcribe.schema import Transcript
 RAW_REPLY_NAME = "highlight_raw_chunk_{index:03d}.txt"
 RAW_REPLY_GLOB = "highlight_raw_chunk_*.txt"
 
+# Token usage summed over every model call in one highlight run (F25).
+USAGE_NAME = "highlight_usage.json"
+# Field names of the SDK's Usage object (anthropic.types.Usage).
+USAGE_FIELDS = ("input_tokens", "output_tokens",
+                "cache_creation_input_tokens", "cache_read_input_tokens")
+
 SYSTEM_PROMPT = """You are an expert short-form video editor. You find the \
 moments in long-form video transcripts that would perform as standalone \
 TikTok/Reels/Shorts clips.
@@ -257,17 +263,51 @@ class Highlighter(abc.ABC):
     # Set by the stage runner to the job dir; backends may drop debug files
     # there (e.g. raw LLM replies that yielded nothing).
     debug_dir: Path | None = None
+    # Model id for cost lookups; None for engines that call no paid model.
+    model: str | None = None
+    # Summed per run by find_highlights; see usage_record().
+    usage: dict | None = None
 
     @abc.abstractmethod
     def analyze_chunk(self, chunk: Chunk, source_duration: float) -> list[dict]:
         """One transcript chunk -> sanitized candidate dicts."""
 
+    def reset_usage(self) -> None:
+        self.usage = {"calls": 0, **{f: 0 for f in USAGE_FIELDS},
+                      # the 1-hour share of cache_creation_input_tokens
+                      "cache_write_1h_tokens": 0,
+                      # every inference_geo the API reported (it can change
+                      # the price)
+                      "inference_geo": []}
+
+    def add_usage(self, usage) -> None:
+        """Add one reply's token counts. Missing or None fields count as 0."""
+        if self.usage is None:
+            self.reset_usage()
+        for f in USAGE_FIELDS:
+            self.usage[f] += int(getattr(usage, f, None) or 0)
+        split = getattr(usage, "cache_creation", None)
+        self.usage["cache_write_1h_tokens"] += int(
+            getattr(split, "ephemeral_1h_input_tokens", None) or 0)
+        geo = getattr(usage, "inference_geo", None)
+        if geo and geo not in self.usage["inference_geo"]:
+            self.usage["inference_geo"] = sorted(
+                [*self.usage["inference_geo"], geo])
+
+    def usage_record(self) -> dict:
+        """What the stage writes to highlight_usage.json."""
+        if self.usage is None:
+            self.reset_usage()
+        return {"engine": self.name, "model": self.model, **self.usage}
+
     def find_highlights(self, t: Transcript, min_score: int = 55,
                         max_candidates: int = 12) -> CandidateSet:
         """Full pipeline: chunk -> analyze -> merge -> dedup -> rank."""
+        self.reset_usage()
         all_raw: list[dict] = []
         rejected: list[RejectedCandidate] = []
         for chunk in chunk_transcript(t):
+            self.usage["calls"] += 1     # one analyze_chunk = one model call
             for d in self.analyze_chunk(chunk, t.audio_duration_sec):
                 why = d.pop("stranger_fail_reason", None)
                 if why is None:
@@ -335,6 +375,7 @@ class AnthropicHighlighter(Highlighter):
             }],
             **extra,
         )
+        self.add_usage(getattr(resp, "usage", None))
         text = "".join(b.text for b in resp.content if b.type == "text")
         found = parse_llm_response(text, chunk, source_duration)
         if not found:

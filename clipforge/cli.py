@@ -4,6 +4,7 @@ ClipForge CLI.
 Usage:
     python -m clipforge.cli ingest <video-file> [--workspace DIR] [--force]
     python -m clipforge.cli status <job-id>    [--workspace DIR]
+    python -m clipforge.cli bench init|run|report [--bench-dir DIR] [--only NAME ...]
     python -m clipforge.cli audio check|add ...
 """
 import argparse
@@ -208,6 +209,15 @@ def main() -> int:
     ps.add_argument("job_id")
     ps.add_argument("--workspace", default=str(DEFAULT_WS))
 
+    pb = sub.add_parser(
+        "bench", help="Benchmark: run the fixed video set, compare runs")
+    pb.add_argument("action", choices=["init", "run", "report"])
+    pb.add_argument("--bench-dir", default=None,
+                    help="default: $CLIPFORGE_BENCH_DIR, else "
+                         "clipforge-bench in your home folder")
+    pb.add_argument("--workspace", default=str(DEFAULT_WS))
+    pb.add_argument("--only", nargs="+", default=None, metavar="NAME",
+                    help="run just these bench.json entries")
     pa = sub.add_parser("audio", help="Manage the sound-effect and music "
                         "library (see docs/AUDIO_SOURCES.md)")
     asub = pa.add_subparsers(dest="audio_cmd", required=True)
@@ -424,6 +434,8 @@ def main() -> int:
 
     if args.cmd == "audio":
         return audio_command(args)
+    if args.cmd == "bench":
+        return run_bench_command(args)
     return 2
 
 
@@ -458,6 +470,62 @@ def audio_command(args) -> int:
     for prob in lib.problems:
         print(f"  problem: {prob}")
     return 1 if lib.problems else 0
+
+
+def run_bench_command(args) -> int:
+    from clipforge import bench
+    bench_dir = bench.resolve_bench_dir(args.bench_dir)
+
+    if args.action == "init":
+        path, created = bench.init_bench(bench_dir)
+        if created:
+            print(f"Created {path}\nPut your benchmark videos in {bench_dir}, "
+                  f"edit {bench.CONFIG_NAME} to match, then run "
+                  "`python -m clipforge.cli bench run`.")
+        else:
+            print(f"{path} already exists; left it as it is.")
+        return 0
+
+    workspace = Path(args.workspace)
+    if not bench_dir.is_dir():
+        print(f"BENCH FAILED: no bench folder at {bench_dir}: run "
+              "`python -m clipforge.cli bench init` first", file=sys.stderr)
+        return bench.EXIT_SETUP
+
+    if args.action == "report":
+        rows = bench.build_rows(bench_dir, workspace)
+        print("\n".join(bench.compare_latest(rows)))
+        try:
+            bench.write_results(bench_dir, workspace)
+        except OSError:
+            print(bench.RESULTS_LOCKED_HINT, file=sys.stderr)
+            return bench.EXIT_RESULTS_LOCKED
+        print(f"results: {bench_dir / bench.RESULTS_NAME}")
+        return bench.EXIT_OK
+
+    # run
+    problem = ffmpeg_problem()
+    if problem:
+        print(f"BENCH FAILED: {problem}", file=sys.stderr)
+        return bench.EXIT_SETUP
+    report_ffmpeg()
+    from clipforge.pipeline import PipelineConfig
+    try:
+        record = bench.run_bench(bench_dir, workspace, PipelineConfig(),
+                                 only=args.only)
+    except bench.BenchConfigError as e:
+        print(f"BENCH FAILED: {e}", file=sys.stderr)
+        return bench.EXIT_SETUP
+    rows = bench.build_rows(bench_dir, workspace)
+    print("\n".join(bench.compare_latest(rows)))
+    print(f"run file: {bench_dir / bench.RUNS_DIR / (record['run_id'] + '.json')}")
+    print("Review the bench jobs on the review website, then run "
+          "`bench report` to add approval rates.")
+    if record.get("results_error"):
+        print(bench.RESULTS_LOCKED_HINT, file=sys.stderr)
+        return bench.EXIT_RESULTS_LOCKED
+    bad = [v for v in record["videos"] if v["status"] in ("failed", "missing")]
+    return bench.EXIT_VIDEO_PROBLEM if bad else bench.EXIT_OK
 
 
 if __name__ == "__main__":

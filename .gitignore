@@ -15,8 +15,9 @@ __pycache__/
 venv/
 env/
 
-# ClipForge runtime output (videos, job state, review DB)
+# ClipForge runtime output (videos, job state, review DB, benchmark runs)
 workspace/
+clipforge-bench/
 renders/
 input/
 *.mp4
