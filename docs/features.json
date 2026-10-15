@@ -1165,6 +1165,35 @@
       "passes": false,
       "notes": "Diego 2026-10-14 asked for a manual editing tab like a regular video editor. Heavier edits go to DaVinci Resolve through OpenTimelineIO export (F38).",
       "priority": 23
+    },
+    {
+      "id": "F54",
+      "title": "Highlight picking that keeps long moments and finds several per chunk; 0-clip runs show as a warning",
+      "area": [
+        "clipforge/highlight/**",
+        "clipforge/bench.py",
+        "clipforge/server/app.py",
+        "clipforge/server/static/index.html",
+        "tests/test_highlight.py",
+        "tests/test_bench.py",
+        "tests/test_server.py",
+        "tests/test_ui_static.py"
+      ],
+      "depends_on": [
+        "F10",
+        "F47"
+      ],
+      "acceptance": [
+        "A candidate longer than the max length is trimmed to the max length around its trigger_t, reaction_peak_t and payoff_end_t (keeping the peak and as much of the payoff as fits) instead of dropped; only a candidate with no usable window or shorter than the minimum is dropped (test with the Ron reply shapes: 155 s and 299 s)",
+        "Each chunk's log line says how many candidates were kept, trimmed and dropped, and why (length, junk, below min score); the counts also go into highlight_usage.json or the manifest note, with no paths (test)",
+        "The prompt asks for several moments per chunk (a stated target scaled to chunk length, e.g. 1 per ~3-5 minutes for a gaming recipe) and still caps length; the prompt text is checked by a test (no real API calls)",
+        "Root cause written in the feature notes: what changed since the first Ron test (compare the prompt and parser before F10 and now); a regression test fails on main for the Ron-shaped replies",
+        "A run that ends with 0 clips shows as a warning: bench results/CSV status is 'warn' (not 'ok') with a fixed reason, and /api/jobs plus the review page show the same fixed sentence (static + server tests; browser tests run)",
+        "Existing behaviour for normal-length candidates is unchanged (test)"
+      ],
+      "passes": false,
+      "notes": "Diego 2026-10-14: bench run on Ron (bench-20261014-210447-ron) gave 0 clips; Claude returned one 155 s and one 299 s candidate (score 82) in two 18-minute chunks and the parser dropped both for dur > 1.5 x MAX_CLIP_SEC. The length rule dates from the first commit, so the likely change is the F10 prompt (more fields, 'fully paid off', stranger check) making replies longer and sparser. Needs a fresh bench run by Diego to confirm; F49 waits for it. Server/UI change: tester + browser tests required.",
+      "priority": 12.5
     }
   ]
 }
