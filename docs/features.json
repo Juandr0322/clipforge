@@ -1194,6 +1194,28 @@
       "passes": false,
       "notes": "Diego 2026-10-14: bench run on Ron (bench-20261014-210447-ron) gave 0 clips; Claude returned one 155 s and one 299 s candidate (score 82) in two 18-minute chunks and the parser dropped both for dur > 1.5 x MAX_CLIP_SEC. The length rule dates from the first commit, so the likely change is the F10 prompt (more fields, 'fully paid off', stranger check) making replies longer and sparser. Needs a fresh bench run by Diego to confirm; F49 waits for it.  ROOT CAUSE (built 2026-10-14, from the diff of b9aec92^ vs HEAD, no real API call): PROVEN: the length rule (drop if dur > 1.5 x MAX_CLIP_SEC) and the 'ideal length 15-90 s' line are byte-identical before and after F10, so the parser did not change; the Ron replies (155 s and 299 s, 1 candidate per 18-min chunk, 435 output tokens) were dropped by that old rule. PROVEN: F10 added to the prompt trigger/peak/payoff times, context_setup, hook_type and a stranger check ('moments that need backstory must be rejected'), and nothing else about length or count changed ('0-4 candidates', 'Return [] if nothing is genuinely strong'). HYPOTHESIS (not provable offline): the stricter 'self-contained / fully paid off / reject backstory' wording makes the model pick one whole arc (the full 73-hour speech, the whole dragon fight) and stop, instead of several short moments; the earlier Ron test probably returned shorter spans. It may also be a different video or model run. Fix: trim instead of drop, ask for ~1 moment per 3-5 min with an explicit length cap, per-chunk counts, 0-clip warning. Needs a fresh bench run by Diego to confirm. Server/UI change: tester + browser tests required.",
       "priority": 12.5
+    },
+    {
+      "id": "F55",
+      "title": "Fix browser tests broken by the F11 merge (multi-clip tests time out on .clip video)",
+      "area": [
+        "clipforge/refine/**",
+        "clipforge/quality/**",
+        "tests/test_ui_browser.py",
+        "tests/test_refine.py",
+        "tests/test_hook_score.py"
+      ],
+      "depends_on": [
+        "F11"
+      ],
+      "acceptance": [
+        "Root cause found by diffing F11 (merge 8e1e4fe, branch commits c61cc48 and the hook-first trimming commits) against 0dd9aab: why do the 12 multi-clip browser tests no longer find '.clip video'? Written in the notes; say whether the product or the test fixture assumption was wrong",
+        "All 27 browser tests pass (CLIPFORGE_BROWSER_TESTS=1 python -m pytest tests/test_ui_browser.py -q), with no test weakened: if a test assumption was wrong, the change is explained and a replacement test still checks the same behaviour",
+        "If the product was wrong (e.g. refine trimming, quality pass or hook score breaking multi-clip jobs), a non-browser regression test fails on main and passes after the fix"
+      ],
+      "passes": true,
+      "notes": "FIXED: the product was right, the fixture was wrong. F11 added trigger_t/reaction_peak_t/payoff_end_t to RefinedClip with a validator (start <= trigger <= peak <= payoff <= end). The multi fixture copied c0 and moved start/end with model_copy (no validation), so refined.json held out-of-range times, RefinedSet.load raised, /api/jobs/{id} returned 500 and .clip video never appeared. Fixture now sets the three times to None on the two synthesized clips. 27/27 browser tests pass. Follow-ups: /api/jobs/{id} returns a generic 500 on a bad refined.json; job_metrics/workspace_metrics let one bad job fail /api/metrics for the whole workspace. Found 2026-10-15 while checking F54: test_keyboard_shortcuts_act_on_the_selected_clip passes at 0dd9aab (F10 merge) and e06dd69 (F25 merge) and fails at 8e1e4fe (F11 merge) and all later commits, including main. The F11 PR did not touch the server so browser tests were not run before merge. The multi fixture (tests/test_ui_browser.py ~line 377) assumes c0.start < 5.0 < c1.start from the mock pipeline, which hook-first trimming may have changed.",
+      "priority": 12.4
     }
   ]
 }

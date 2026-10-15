@@ -391,13 +391,19 @@ def multi(env):
     assert len(rs.clips) >= 2
     c0, c1 = rs.clips[0], rs.clips[1]
     assert c0.start < 5.0 < c1.start
+    # F11 added trigger/peak/payoff times that must lie inside [start, end].
+    # The clips moved below must not keep c0's, or RefinedSet.load rejects
+    # them and the job page answers 500.
+    no_moments = {"trigger_t": None, "reaction_peak_t": None, "payoff_end_t": None}
     rs.clips = [
         c0.model_copy(update={"id": 0, "score": 85, "hook": "hook zero"}),
         c1.model_copy(update={"id": 1, "score": 65, "hook": "hook one"}),
         c0.model_copy(update={"id": 2, "score": 95, "hook": "hook two", "start": 5.0,
-                              "speech_start": 5.5, "speech_end": 18.5, "end": 19.0}),
+                              "speech_start": 5.5, "speech_end": 18.5, "end": 19.0,
+                              **no_moments}),
         c0.model_copy(update={"id": 3, "score": 40, "hook": "hook three", "start": 1.0,
-                              "speech_start": 1.5, "speech_end": 14.5, "end": 15.0}),
+                              "speech_start": 1.5, "speech_end": 14.5, "end": 15.0,
+                              **no_moments}),
     ]
     rs.save(job_dir / "refined.json")
     for cid in (2, 3):

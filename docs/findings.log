@@ -65,3 +65,6 @@
 2026-10-14 | F31 | reviewer | MAJOR | round 1: bad recipe name/file left job stuck at ingested with no error (fixed: fixed-sentence FAILED, CLI exit 2)
 2026-10-14 | F31 | reviewer | MINOR | round 1 fixed: version drift record, no recipe.json for finished pre-F31 jobs, env parse matches from_env, atomic write_record
 2026-10-14 | F31 | reviewer | MINOR | open: CLI early CLIPFORGE_RECIPE check refuses jobs the server would run, and its except RecipeError branch is untested; drift overwrites recorded version (no history); baseline test job 'old' is not main's code; private helper imports
+2026-10-15 | F11 | lead | MAJOR | F11 merge broke 12 browser tests (fixture kept out-of-range moment times); not caught because F11 touched no server file and browser tests were not run (found by F54 builder, fixed in F55)
+2026-10-15 | F55 | reviewer | MINOR | open: /api/jobs/{id} gives a generic 500 on a bad refined.json; workspace_metrics lets one bad job fail /api/metrics for every job
+2026-10-15 | F55 | builder | MINOR | ran pkill -f 'clipforge.cli serve' (LESSONS says kill by PID; could kill another agent's server)
