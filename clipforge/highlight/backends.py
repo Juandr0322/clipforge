@@ -75,10 +75,24 @@ that need backstory must be rejected.
 
 Rules:
 - start/end MUST align to segment boundaries from the transcript
-- 0-4 candidates per chunk. Return [] if nothing is genuinely strong. Do \
-NOT invent weak candidates to fill space.
+- Find SEVERAL moments per chunk: aim for roughly one per 3-5 minutes of \
+the chunk (the message states the target for this chunk). One long arc is \
+not one moment: pick the strongest part of it, and look for other moments \
+elsewhere in the chunk. Return fewer, or [], only if nothing is genuinely \
+strong. Do NOT invent weak candidates to fill space.
+- LENGTH CAP: every moment must be at most {max_len:.0f} seconds \
+(end - start <= {max_len:.0f}). If a story runs longer, return only its best \
+{max_len:.0f} seconds: from the trigger through the peak, plus as much payoff \
+as fits.
 - score 80+ means you'd bet on it; 60-79 solid; below 60 don't include it
 {examples}"""
+
+
+def moment_target(chunk_sec: float) -> tuple[int, int]:
+    """(low, high) number of moments to ask for in a chunk: one per 3-5 min."""
+    minutes = max(chunk_sec, 0.0) / 60
+    lo = max(1, round(minutes / 5))
+    return lo, max(lo, round(minutes / 3))
 
 
 def build_system_prompt(examples_text: str = "") -> str:
@@ -106,13 +120,42 @@ def load_examples(examples_dir: Path | None) -> str:
 # defensive parsing of LLM output
 # ---------------------------------------------------------------------------
 
+def _new_stats() -> dict:
+    return {"parsed": 0, "kept": 0, "trimmed": 0,
+            "dropped_length": 0, "dropped_junk": 0}
+
+
+def _trim_window(start: float, end: float, item: dict) -> tuple[float, float]:
+    """Max-length window inside [start, end] for a too-long candidate.
+
+    Starts no earlier than trigger_t, keeps reaction_peak_t and as much of
+    the payoff (up to payoff_end_t) as fits. Without usable trigger/peak/
+    payoff times the window is the first MAX_CLIP_SEC of the candidate."""
+    t0, tp, te = (_num(item.get(k)) for k in
+                  ("trigger_t", "reaction_peak_t", "payoff_end_t"))
+    if (None in (t0, tp, te) or not start <= t0 <= tp <= te <= end):
+        return start, start + MAX_CLIP_SEC
+    if tp - t0 <= MAX_CLIP_SEC * 0.7:
+        # the whole setup fits: begin at the trigger, fill with payoff
+        return t0, min(t0 + MAX_CLIP_SEC, end)
+    # the peak is far from the trigger: end a little after the peak
+    new_end = min(te, tp + MAX_CLIP_SEC * 0.3, end)
+    return max(t0, new_end - MAX_CLIP_SEC), new_end
+
+
 def parse_llm_response(text: str, chunk: Chunk,
-                       source_duration: float) -> list[dict]:
+                       source_duration: float,
+                       stats: dict | None = None) -> list[dict]:
     """
     Extract a JSON array from possibly-messy LLM text and sanitize each
     entry. Returns plain dicts (ids assigned later). Unsalvageable entries
-    are silently dropped — a partial harvest beats a crashed stage.
+    are dropped; a candidate longer than MAX_CLIP_SEC is trimmed around its
+    trigger/peak/payoff instead of dropped (F54). `stats`, when given, is
+    filled with fixed-word counts: parsed/kept/trimmed/dropped_length/
+    dropped_junk. A partial harvest beats a crashed stage.
     """
+    st = stats if stats is not None else _new_stats()
+    st.update(_new_stats())
     # strip markdown fences and find the outermost array
     cleaned = re.sub(r"```(?:json)?", "", text).strip()
     m = re.search(r"\[.*\]", cleaned, flags=re.DOTALL)
@@ -128,33 +171,45 @@ def parse_llm_response(text: str, chunk: Chunk,
     out = []
     valid_types = {"opinion", "story", "insight", "howto", "funny",
                    "emotional", "other"}
+    st["parsed"] = len(raw)
     for item in raw:
         if not isinstance(item, dict):
+            st["dropped_junk"] += 1
             continue
         try:
             if isinstance(item["start"], bool) or isinstance(item["end"], bool):
+                st["dropped_junk"] += 1
                 continue
             start = float(item["start"])
             end = float(item["end"])
             score = int(item["score"])
         except (KeyError, TypeError, ValueError, OverflowError):
+            st["dropped_junk"] += 1
             continue
         if not (math.isfinite(start) and math.isfinite(end)):
+            st["dropped_junk"] += 1
             continue
         # clamp into chunk and source bounds
         start = max(start, 0.0)
         end = min(end, source_duration)
         if end <= start:
+            st["dropped_junk"] += 1
             continue
         dur = end - start
-        if dur < MIN_CLIP_SEC * 0.6 or dur > MAX_CLIP_SEC * 1.5:
-            continue  # hopeless length — drop rather than mangle
-        # soft-clamp toward limits
-        if dur > MAX_CLIP_SEC:
-            end = start + MAX_CLIP_SEC
+        if dur < MIN_CLIP_SEC * 0.6:
+            st["dropped_length"] += 1
+            continue  # too short to be a clip
+        full = (start, end)
+        trimmed = dur > MAX_CLIP_SEC
+        if trimmed:
+            start, end = _trim_window(start, end, item)
+            st["trimmed"] += 1
         score = max(0, min(100, score))
         ctype = item.get("type", "other")
-        extra = _parse_v2(item, start, end)
+        extra = _parse_v2(item, *full)   # times are checked against the reply
+        for k in ("trigger_t", "reaction_peak_t", "payoff_end_t"):
+            if k in extra:               # a trimmed window may cut the payoff
+                extra[k] = round(min(max(extra[k], start), end), 3)
         out.append({
             "start": round(start, 3), "end": round(end, 3), "score": score,
             "hook": str(item.get("hook", ""))[:300],
@@ -163,6 +218,7 @@ def parse_llm_response(text: str, chunk: Chunk,
                      else "other"),
             **extra,
         })
+    st["kept"] = len(out)
     return out
 
 
@@ -258,6 +314,16 @@ def _parse_v2(item: dict, start: float, end: float) -> dict:
 # backends
 # ---------------------------------------------------------------------------
 
+def chunk_log_line(chunk: Chunk, c: dict) -> str:
+    """One stderr line per chunk: counts and fixed reason words only."""
+    return (f"[highlight] chunk {chunk.index} "
+            f"({chunk.start:.0f}s-{chunk.end:.0f}s): kept {c['kept']} "
+            f"(trimmed {c['trimmed']} to the max length), dropped "
+            f"{c['dropped_length']} too short, {c['dropped_junk']} junk, "
+            f"{c['dropped_low_score']} below min score; rejected "
+            f"{c['rejected_stranger']} by stranger check")
+
+
 class Highlighter(abc.ABC):
     name: str = "base"
     # Set by the stage runner to the job dir; backends may drop debug files
@@ -267,6 +333,8 @@ class Highlighter(abc.ABC):
     model: str | None = None
     # Summed per run by find_highlights; see usage_record().
     usage: dict | None = None
+    # Parse counts for the chunk analyze_chunk just handled (None: not kept).
+    last_parse: dict | None = None
 
     @abc.abstractmethod
     def analyze_chunk(self, chunk: Chunk, source_duration: float) -> list[dict]:
@@ -278,7 +346,9 @@ class Highlighter(abc.ABC):
                       "cache_write_1h_tokens": 0,
                       # every inference_geo the API reported (it can change
                       # the price)
-                      "inference_geo": []}
+                      "inference_geo": [],
+                      # per-chunk kept/trimmed/dropped counts (F54)
+                      "chunks": []}
 
     def add_usage(self, usage) -> None:
         """Add one reply's token counts. Missing or None fields count as 0."""
@@ -308,14 +378,30 @@ class Highlighter(abc.ABC):
         rejected: list[RejectedCandidate] = []
         for chunk in chunk_transcript(t):
             self.usage["calls"] += 1     # one analyze_chunk = one model call
-            for d in self.analyze_chunk(chunk, t.audio_duration_sec):
+            self.last_parse = None
+            found = self.analyze_chunk(chunk, t.audio_duration_sec)
+            counts = {"index": chunk.index, "kept": 0, "trimmed": 0,
+                      "dropped_length": 0, "dropped_junk": 0,
+                      "dropped_low_score": 0, "rejected_stranger": 0}
+            if self.last_parse:
+                counts.update({k: self.last_parse[k] for k in
+                               ("trimmed", "dropped_length", "dropped_junk")})
+            for d in found:
                 why = d.pop("stranger_fail_reason", None)
+                if why is None and d["score"] < min_score:
+                    counts["dropped_low_score"] += 1
+                elif why is None:
+                    counts["kept"] += 1
+                else:
+                    counts["rejected_stranger"] += 1
                 if why is None:
                     all_raw.append(d)
                 else:
                     rejected.append(RejectedCandidate(
                         start=d["start"], end=d["end"], hook=d["hook"],
                         reason=why))
+            self.usage["chunks"].append(counts)
+            print(chunk_log_line(chunk, counts), file=sys.stderr)
 
         # chunks overlap, so the same rejected moment can be reported twice;
         # reuse dedup() (rejects carry no score, so no min_score filter)
@@ -359,25 +445,30 @@ class AnthropicHighlighter(Highlighter):
         self._system = build_system_prompt(load_examples(examples_dir))
 
     def analyze_chunk(self, chunk: Chunk, source_duration: float) -> list[dict]:
+        lo, hi = moment_target(chunk.end - chunk.start)
         extra = ({"workspace_id": self._workspace_id}
                  if self._workspace_id else {})
         resp = self._client.messages.create(
             model=self.model,
-            max_tokens=2000,
+            max_tokens=4000,
             system=self._system,
             messages=[{
                 "role": "user",
                 "content": (
                     f"Transcript chunk {chunk.index} "
                     f"(covers {chunk.start:.0f}s-{chunk.end:.0f}s of a "
-                    f"{source_duration:.0f}s video):\n\n{chunk.render()}"
+                    f"{source_duration:.0f}s video). Target: about "
+                    f"{lo}-{hi} moments in this chunk, each at most "
+                    f"{MAX_CLIP_SEC:.0f} seconds long:\n\n{chunk.render()}"
                 ),
             }],
             **extra,
         )
         self.add_usage(getattr(resp, "usage", None))
         text = "".join(b.text for b in resp.content if b.type == "text")
-        found = parse_llm_response(text, chunk, source_duration)
+        stats = _new_stats()
+        found = parse_llm_response(text, chunk, source_duration, stats)
+        self.last_parse = stats
         if not found:
             self._report_empty(chunk, text)
         return found

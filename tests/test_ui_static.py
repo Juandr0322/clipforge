@@ -140,6 +140,16 @@ def test_phone_layout_rules_exist():
     assert "flex-direction:column" in src.split("@media (max-width:700px)")[1]
 
 
+def test_zero_clip_warning_is_shown_from_the_server_sentence():
+    src = _source()
+    # job pane and job list both read the fixed sentence the API sends
+    assert "j.warning" in src
+    assert "D.statusText.textContent = j.warning" in src
+    assert '"NO CLIPS"' in src
+    # the sentence itself lives on the server, not in the page
+    assert "No clips were found" not in src
+
+
 def test_upload_has_a_timeout_so_the_queue_cannot_hang():
     src = _source()
     assert "xhr.timeout = UPLOAD_TIMEOUT_MS" in src

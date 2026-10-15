@@ -822,3 +822,37 @@ def test_readers_wait_for_a_writer_holding_the_job_lock(tmp_path):
         assert t.is_alive() and not done      # blocked while the writer holds it
     t.join(5)
     assert not t.is_alive() and done["metrics"]["reviewed"] == 1
+
+
+# ------------------------------------------ F54: 0 clips is a warning
+
+def _finished_job(ws, jid, n_clips):
+    from clipforge.common.manifest import Manifest, Stage
+    from clipforge.refine.refine import RefinedSet
+    d = ws / jid
+    m = Manifest(job_id=jid, stage=Stage.RENDERED, refined_path="refined.json")
+    m.save(d)
+    RefinedSet(source_duration_sec=60.0).save(d / "refined.json")
+    return d
+
+
+def test_zero_clip_job_carries_the_fixed_warning(tmp_path):
+    from clipforge.highlight.schema import ZERO_CLIPS_WARNING
+    ws = tmp_path / "ws"
+    client = TestClient(create_app(ws, config=MOCK_CFG, sync_pipeline=True))
+    _finished_job(ws, "job-zero", 0)
+    (listed,) = [j for j in client.get("/api/jobs").json()
+                 if j["job_id"] == "job-zero"]
+    assert listed["warning"] == ZERO_CLIPS_WARNING
+    assert client.get("/api/jobs/job-zero").json()["warning"] == ZERO_CLIPS_WARNING
+    assert "/" not in ZERO_CLIPS_WARNING and "job-zero" not in ZERO_CLIPS_WARNING
+
+
+def test_job_with_clips_or_unfinished_has_no_warning(fresh, source_video):
+    ws, client = fresh
+    with open(source_video, "rb") as f:
+        r = client.post("/api/jobs", files={"file": ("a.mp4", f, "video/mp4")})
+    jid = r.json()["job_id"]
+    detail = client.get(f"/api/jobs/{jid}").json()
+    assert detail["clips"] and detail["warning"] is None
+    assert client.get("/api/jobs").json()[0]["warning"] is None

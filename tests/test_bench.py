@@ -440,3 +440,33 @@ def test_cost_inference_geo(geos, expected):
              "inference_geo": geos}
     got = bench.cost_usd(usage)
     assert got == (pytest.approx(expected) if expected is not None else None)
+
+
+# ------------------------------------------ F54: a 0-clip run is a warning
+
+def test_zero_clip_run_is_warn_with_a_fixed_reason(monkeypatch, tmp_path):
+    from clipforge.common.manifest import Manifest
+    from clipforge.highlight.schema import ZERO_CLIPS_WARNING
+
+    def fake_ingest(src, workspace, job_id=None):
+        Manifest(job_id=job_id).save(Path(workspace) / job_id)
+
+    monkeypatch.setattr("clipforge.ingest.ingest.ingest", fake_ingest)
+    monkeypatch.setattr("clipforge.pipeline.run_pipeline",
+                        lambda *a, **k: None)       # finishes, makes nothing
+    bench_dir, ws = tmp_path / "bench", tmp_path / "ws"
+    _write_config(bench_dir, [{"name": "v", "type": "gaming", "file": "v.mp4"}])
+    (bench_dir / "v.mp4").write_bytes(b"x")
+    record = bench.run_bench(bench_dir, ws, MOCK_CFG,
+                             progress=lambda m: None, run_id="z1")
+    row = _row(record, "v")
+    assert row["status"] == "warn" and row["clips"] in (0, None)
+    assert row["error"] == ZERO_CLIPS_WARNING
+    assert "/" not in row["error"] and "\\" not in row["error"]
+    bench.write_results(bench_dir, ws)
+    csv_text = (bench_dir / "results.csv").read_text(encoding="utf-8")
+    assert ",warn," in csv_text and ZERO_CLIPS_WARNING in csv_text
+
+
+def test_run_with_clips_stays_ok(bench_run):
+    assert _row(bench_run["record"], "talk1")["status"] == "ok"
