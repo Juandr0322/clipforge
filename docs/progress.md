@@ -2,6 +2,7 @@
 <!-- Newest entry at the top. The lead adds one entry per feature attempt.
      Every agent reads the top of this file first, so keep entries to 1–2 lines. -->
 
+- 2026-10-15 · F54 · done, reviewed PASS (PR, not yet merged) · Ron bench gave 0 clips because replies of 155 s and 299 s were dropped by the 1.5x length rule. Now trimmed to 90 s around the peak, prompt asks for several moments per chunk, per-chunk kept/trimmed/dropped counts, 0-clip runs show as warn (bench) and NO CLIPS (page). Needs Diego's re-run of the Ron bench to confirm the prompt effect.
 - 2026-10-15 · F55 · done · multi-clip browser tests had failed since the F11 merge: the test fixture kept moment times the new validator rejects. Fixture fixed, 27/27 browser tests pass. Lesson: features that change a model used by the server need the browser tests run before merge.
 - 2026-10-14 · F31 · merged (PR #5) · Next: F49 (edit.json), then F13 + F50 captions, F51 dead air, F52 layouts (Phase 1 order per SPEC Group D). F14/F15 are Phase 6, not next. F49 waits until Diego has done the bench run.
 - 2026-10-14 · F31 · built, reviewed PASS (PR, not yet merged) · six versioned recipe files (talk, gaming, storytime, talking_head, cinematic, day_in_life), validated on load, recorded per job in recipe.json; gaming carries the F48 audio defaults (SFX -6, music -20 cap -6, duck -6); a bad recipe fails the job visibly. Also touched cli.py and .env.example.

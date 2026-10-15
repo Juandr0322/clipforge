@@ -68,3 +68,7 @@
 2026-10-15 | F11 | lead | MAJOR | F11 merge broke 12 browser tests (fixture kept out-of-range moment times); not caught because F11 touched no server file and browser tests were not run (found by F54 builder, fixed in F55)
 2026-10-15 | F55 | reviewer | MINOR | open: /api/jobs/{id} gives a generic 500 on a bad refined.json; workspace_metrics lets one bad job fail /api/metrics for every job
 2026-10-15 | F55 | builder | MINOR | ran pkill -f 'clipforge.cli serve' (LESSONS says kill by PID; could kill another agent's server)
+2026-10-15 | F54 | reviewer | MAJOR | round 1: trimming could leave a 5-10 s clip counted as kept (trigger near candidate end); fixed by anchoring at the end plus a min-length check
+2026-10-15 | F54 | reviewer | MINOR | round 1 fixed: peak lost when another time was off-range, invented clamped times, NO CLIPS shown while rerunning, unused test arg, extra refined.json I/O per poll
+2026-10-15 | F54 | reviewer | MINOR | round 2 fixed: times with >3 decimals lost trigger_t on normal-length candidates; missing server tests for running/failed 0-clip jobs
+2026-10-15 | F54 | lead | MINOR | open: root cause of sparse picks is a hypothesis (F10 prompt wording); confirm with a fresh Ron bench run. Later: quick transcription check before the long ingest; check installed packages match requirements.txt
