@@ -197,8 +197,9 @@ def create_app(workspace: Path, config: PipelineConfig | None = None,
 
     def zero_clip_warning(d: Path, m: Manifest) -> str | None:
         """The fixed sentence for a finished job that has no clips."""
-        if m.is_failed or not m.is_at_least(Stage.RENDERED):
-            return None
+        if m.is_failed or m.job_id in running or \
+                not m.is_at_least(Stage.RENDERED):
+            return None      # cheap checks first: refined.json only for done jobs
         try:
             if m.refined_path and \
                     RefinedSet.load(d / m.refined_path).clips:

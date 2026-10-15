@@ -927,7 +927,8 @@ def test_ron_155s_reply_is_trimmed_not_dropped():
     stats = {}
     (c,) = parse_llm_response(_ron(0), RON_CHUNK, 1801.0, stats)
     assert c["start"] == 245 and c["end"] - c["start"] == MAX_CLIP_SEC
-    assert c["trigger_t"] <= c["reaction_peak_t"] <= c["payoff_end_t"] <= c["end"]
+    assert c["trigger_t"] <= c["reaction_peak_t"] <= c["end"]
+    assert "payoff_end_t" not in c            # 399 is past the trimmed end
     assert c["reaction_peak_t"] == 303        # the peak is kept
     assert c["score"] == 82 and c["hook_type"] == "number"
     assert (stats["kept"], stats["trimmed"], stats["dropped_length"]) == (1, 1, 0)
@@ -939,7 +940,7 @@ def test_ron_299s_reply_keeps_the_peak_and_the_payoff():
     assert c["start"] >= 1501.5                        # not before the trigger
     assert c["start"] < 1791.2 < c["end"]              # peak inside
     assert c["end"] == 1800.3                          # payoff fits, kept
-    assert c["trigger_t"] == c["start"]                # clamped into the window
+    assert "trigger_t" not in c                        # cut off: not invented
     assert c["reaction_peak_t"] == 1791.2 and c["payoff_end_t"] == 1800.3
 
 
@@ -956,7 +957,7 @@ def test_setup_that_fits_starts_at_the_trigger():
             '"payoff_end_t": 300}]')
     (c,) = parse_llm_response(text, CHUNK, 1000)
     assert (c["start"], c["end"]) == (130, 130 + MAX_CLIP_SEC)
-    assert c["payoff_end_t"] == c["end"]
+    assert "payoff_end_t" not in c            # 300 is past the trimmed end
 
 
 def test_too_short_is_still_dropped_and_counted():
@@ -1027,3 +1028,57 @@ def test_chunk_counts_reach_highlight_usage_json(transcribed_job):
     highlight_job(transcribed_job, MockHighlighter())
     rec = json.loads((transcribed_job / USAGE_NAME).read_text(encoding="utf-8"))
     assert rec["chunks"] and rec["chunks"][0]["index"] == 0
+
+
+# --------------------------------------------- F54 review fixes
+
+def _one(start, end, t0=None, tp=None, te=None, src=1000):
+    times = "" if t0 is None else (
+        f', "trigger_t": {t0}, "reaction_peak_t": {tp}, "payoff_end_t": {te}')
+    text = (f'[{{"start": {start}, "end": {end}, "score": 80, "hook": "h", '
+            f'"reason": "r"{times}}}]')
+    stats = {}
+    return parse_llm_response(text, CHUNK, src, stats), stats
+
+
+def test_trigger_near_the_end_anchors_the_window_at_the_end():
+    for end, times in [(100, (95, 96, 100)), (300, (290, 295, 300))]:
+        (c,), st = _one(0, end, *times)
+        assert c["end"] == end and c["end"] - c["start"] == MAX_CLIP_SEC
+        assert c["start"] < times[0] < c["end"]       # trigger and peak kept
+        assert c["trigger_t"] == times[0] and st["trimmed"] == 1
+
+
+def test_trim_result_under_the_minimum_is_dropped_and_counted():
+    # a window the trim cannot widen: end - start < MIN after trimming
+    from clipforge.highlight import backends
+    orig = backends._trim_window
+    backends._trim_window = lambda s, e, i: (s, s + 5)
+    try:
+        out, st = _one(0, 300)
+    finally:
+        backends._trim_window = orig
+    assert out == [] and st["dropped_length"] == 1 and st["trimmed"] == 0
+
+
+def test_valid_peak_anchors_the_window_when_another_time_is_off():
+    # payoff_end_t lies past the candidate's end: only the peak is usable
+    (c,), _ = _one(0, 300, 190, 200, 350)
+    assert c["start"] < 200 < c["end"] and c["end"] - c["start"] == MAX_CLIP_SEC
+    assert (c["start"], c["end"]) == (155, 245)
+    assert "trigger_t" not in c                       # all-or-none, untrusted
+    (c,), _ = _one(0, 300, 10, 290, 295)              # peak near the end
+    assert c["end"] == 295 and c["start"] < 290 < c["end"]
+
+
+def test_times_cut_off_by_the_trim_are_dropped_not_clamped():
+    (c,), _ = _one(0, 300, 5, 150, 290)
+    assert c["reaction_peak_t"] == 150
+    assert "trigger_t" not in c and "payoff_end_t" not in c
+
+
+def test_ron_fixtures_are_the_exact_raw_replies():
+    """Fixtures are byte-copies of the raw replies of bench run
+    bench-20261014-210447-ron (highlight_raw_chunk_000/001.txt), not hand-built."""
+    assert _ron(0).startswith('[{"start": 245, "end": 400')
+    assert _ron(1).startswith('[{"start": 1501.5, "end": 1800.3')

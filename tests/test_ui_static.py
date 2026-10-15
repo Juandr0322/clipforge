@@ -145,6 +145,9 @@ def test_zero_clip_warning_is_shown_from_the_server_sentence():
     # job pane and job list both read the fixed sentence the API sends
     assert "j.warning" in src
     assert "D.statusText.textContent = j.warning" in src
+    # a running job (rerun) never shows the finished-with-nothing state
+    assert "j.warning && !j.running" in src
+    assert "!failed && !j.running && !!j.warning" in src
     assert '"NO CLIPS"' in src
     # the sentence itself lives on the server, not in the page
     assert "No clips were found" not in src

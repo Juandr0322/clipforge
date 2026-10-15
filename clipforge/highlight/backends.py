@@ -133,14 +133,26 @@ def _trim_window(start: float, end: float, item: dict) -> tuple[float, float]:
     payoff times the window is the first MAX_CLIP_SEC of the candidate."""
     t0, tp, te = (_num(item.get(k)) for k in
                   ("trigger_t", "reaction_peak_t", "payoff_end_t"))
-    if (None in (t0, tp, te) or not start <= t0 <= tp <= te <= end):
-        return start, start + MAX_CLIP_SEC
-    if tp - t0 <= MAX_CLIP_SEC * 0.7:
-        # the whole setup fits: begin at the trigger, fill with payoff
-        return t0, min(t0 + MAX_CLIP_SEC, end)
-    # the peak is far from the trigger: end a little after the peak
-    new_end = min(te, tp + MAX_CLIP_SEC * 0.3, end)
-    return max(t0, new_end - MAX_CLIP_SEC), new_end
+
+    def inside(t) -> bool:
+        return t is not None and start <= t <= end
+
+    if inside(t0) and inside(tp) and inside(te) and t0 <= tp <= te:
+        if tp - t0 <= MAX_CLIP_SEC * 0.7:
+            # the whole setup fits: begin at the trigger, fill with payoff
+            w_start, w_end = t0, min(t0 + MAX_CLIP_SEC, end)
+            if w_end - w_start < MIN_CLIP_SEC:
+                # trigger too close to the end: anchor at the end instead
+                w_start, w_end = max(start, end - MAX_CLIP_SEC), end
+            return w_start, w_end
+        # the peak is far from the trigger: end a little after the peak
+        new_end = min(te, tp + MAX_CLIP_SEC * 0.3, end)
+        return max(t0, new_end - MAX_CLIP_SEC), new_end
+    if inside(tp):
+        # only the peak is usable: centre the window on it
+        w_start = max(start, min(tp - MAX_CLIP_SEC / 2, end - MAX_CLIP_SEC))
+        return w_start, w_start + MAX_CLIP_SEC
+    return start, start + MAX_CLIP_SEC
 
 
 def parse_llm_response(text: str, chunk: Chunk,
@@ -203,13 +215,16 @@ def parse_llm_response(text: str, chunk: Chunk,
         trimmed = dur > MAX_CLIP_SEC
         if trimmed:
             start, end = _trim_window(start, end, item)
+            if end - start < MIN_CLIP_SEC:
+                st["dropped_length"] += 1
+                continue
             st["trimmed"] += 1
         score = max(0, min(100, score))
         ctype = item.get("type", "other")
         extra = _parse_v2(item, *full)   # times are checked against the reply
         for k in ("trigger_t", "reaction_peak_t", "payoff_end_t"):
-            if k in extra:               # a trimmed window may cut the payoff
-                extra[k] = round(min(max(extra[k], start), end), 3)
+            if k in extra and not start <= extra[k] <= end:
+                del extra[k]             # cut off by the trim: not invented
         out.append({
             "start": round(start, 3), "end": round(end, 3), "score": score,
             "hook": str(item.get("hook", ""))[:300],

@@ -826,7 +826,7 @@ def test_readers_wait_for_a_writer_holding_the_job_lock(tmp_path):
 
 # ------------------------------------------ F54: 0 clips is a warning
 
-def _finished_job(ws, jid, n_clips):
+def _finished_job(ws, jid):
     from clipforge.common.manifest import Manifest, Stage
     from clipforge.refine.refine import RefinedSet
     d = ws / jid
@@ -840,7 +840,7 @@ def test_zero_clip_job_carries_the_fixed_warning(tmp_path):
     from clipforge.highlight.schema import ZERO_CLIPS_WARNING
     ws = tmp_path / "ws"
     client = TestClient(create_app(ws, config=MOCK_CFG, sync_pipeline=True))
-    _finished_job(ws, "job-zero", 0)
+    _finished_job(ws, "job-zero")
     (listed,) = [j for j in client.get("/api/jobs").json()
                  if j["job_id"] == "job-zero"]
     assert listed["warning"] == ZERO_CLIPS_WARNING
@@ -856,3 +856,4 @@ def test_job_with_clips_or_unfinished_has_no_warning(fresh, source_video):
     detail = client.get(f"/api/jobs/{jid}").json()
     assert detail["clips"] and detail["warning"] is None
     assert client.get("/api/jobs").json()[0]["warning"] is None
+
