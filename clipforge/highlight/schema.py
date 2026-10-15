@@ -14,6 +14,11 @@ from pydantic import BaseModel, Field, model_serializer, model_validator
 MIN_CLIP_SEC = 15.0
 MAX_CLIP_SEC = 90.0
 
+# Fixed user-facing sentence for a finished run that produced no clips (F54).
+# Shown by the bench (status "warn"), /api/jobs and the review page.
+ZERO_CLIPS_WARNING = ("No clips were found in this video. Try another video "
+                      "or lower the minimum score.")
+
 ClipType = Literal["opinion", "story", "insight", "howto", "funny",
                    "emotional", "other"]
 

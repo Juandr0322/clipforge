@@ -28,7 +28,7 @@ from pydantic import BaseModel
 from clipforge.common.manifest import (
     Manifest, Stage, is_safe_job_id, new_job_id,
 )
-from clipforge.highlight.schema import CandidateSet
+from clipforge.highlight.schema import ZERO_CLIPS_WARNING, CandidateSet
 from clipforge.ingest.ingest import SUPPORTED_EXTENSIONS, IngestError, ingest
 from clipforge.pipeline import PipelineConfig, run_pipeline
 from clipforge.refine.refine import RefinedSet
@@ -195,6 +195,19 @@ def create_app(workspace: Path, config: PipelineConfig | None = None,
             raise HTTPException(409, "job is already running")
         return {"ok": True}
 
+    def zero_clip_warning(d: Path, m: Manifest) -> str | None:
+        """The fixed sentence for a finished job that has no clips."""
+        if m.is_failed or m.job_id in running or \
+                not m.is_at_least(Stage.RENDERED):
+            return None      # cheap checks first: refined.json only for done jobs
+        try:
+            if m.refined_path and \
+                    RefinedSet.load(d / m.refined_path).clips:
+                return None
+        except (OSError, ValueError):
+            return None            # unreadable: not a proven "no clips"
+        return ZERO_CLIPS_WARNING
+
     @app.get("/api/jobs")
     def list_jobs():
         out = []
@@ -212,6 +225,7 @@ def create_app(workspace: Path, config: PipelineConfig | None = None,
                 "running": m.job_id in running,
                 "filename": m.source.original_filename if m.source else "?",
                 "duration": m.source.duration_sec if m.source else 0,
+                "warning": zero_clip_warning(d, m),
             })
         return out
 
@@ -227,6 +241,7 @@ def create_app(workspace: Path, config: PipelineConfig | None = None,
             "source": m.source.model_dump() if m.source else None,
             "history": [h.model_dump() for h in m.history],
             "clips": [], "metrics": None,
+            "warning": zero_clip_warning(d, m),
         }
         if m.candidates_path and (d / m.candidates_path).exists():
             cands = {c.id: c for c in

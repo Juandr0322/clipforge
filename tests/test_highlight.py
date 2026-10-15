@@ -907,3 +907,195 @@ def test_prompt_lists_every_hook_type_and_definitions():
 def test_parse_keeps_new_hook_types(ht):
     (c,) = _parse(_item(hook_type=ht, type="story"))
     assert c["hook_type"] == ht and c["type"] == "story"
+
+
+# ----------------------------------- F54: trim long candidates, ask for more
+
+from clipforge.highlight.backends import moment_target  # noqa: E402
+from clipforge.highlight.schema import MAX_CLIP_SEC  # noqa: E402
+
+RON = Path(__file__).parent / "fixtures"
+RON_CHUNK = Chunk(index=0, start=0, end=1080, segments=[])
+
+
+def _ron(n):
+    return (RON / f"ron_reply_chunk_{n:03d}.json").read_text(encoding="utf-8")
+
+
+def test_ron_155s_reply_is_trimmed_not_dropped():
+    """Root cause of Diego's 0-clip bench run: 155 s candidate, score 82."""
+    stats = {}
+    (c,) = parse_llm_response(_ron(0), RON_CHUNK, 1801.0, stats)
+    assert c["start"] == 245 and c["end"] - c["start"] == MAX_CLIP_SEC
+    assert c["trigger_t"] <= c["reaction_peak_t"] <= c["end"]
+    assert "payoff_end_t" not in c            # 399 is past the trimmed end
+    assert c["reaction_peak_t"] == 303        # the peak is kept
+    assert c["score"] == 82 and c["hook_type"] == "number"
+    assert (stats["kept"], stats["trimmed"], stats["dropped_length"]) == (1, 1, 0)
+
+
+def test_ron_299s_reply_keeps_the_peak_and_the_payoff():
+    (c,) = parse_llm_response(_ron(1), Chunk(1, 960, 2040, []), 1801.0)
+    assert c["end"] - c["start"] <= MAX_CLIP_SEC
+    assert c["start"] >= 1501.5                        # not before the trigger
+    assert c["start"] < 1791.2 < c["end"]              # peak inside
+    assert c["end"] == 1800.3                          # payoff fits, kept
+    assert "trigger_t" not in c                        # cut off: not invented
+    assert c["reaction_peak_t"] == 1791.2 and c["payoff_end_t"] == 1800.3
+
+
+def test_long_candidate_without_times_falls_back_to_its_start():
+    text = '[{"start": 100, "end": 400, "score": 80, "hook": "h", "reason": "r"}]'
+    (c,) = parse_llm_response(text, CHUNK, 1000)
+    assert (c["start"], c["end"]) == (100, 100 + MAX_CLIP_SEC)
+    assert "trigger_t" not in c
+
+
+def test_setup_that_fits_starts_at_the_trigger():
+    text = ('[{"start": 100, "end": 400, "score": 80, "hook": "h", '
+            '"reason": "r", "trigger_t": 130, "reaction_peak_t": 150, '
+            '"payoff_end_t": 300}]')
+    (c,) = parse_llm_response(text, CHUNK, 1000)
+    assert (c["start"], c["end"]) == (130, 130 + MAX_CLIP_SEC)
+    assert "payoff_end_t" not in c            # 300 is past the trimmed end
+
+
+def test_too_short_is_still_dropped_and_counted():
+    stats = {}
+    text = ('[{"start": 0, "end": 5, "score": 99, "hook": "h", "reason": "r"},'
+            ' 7, {"start": "x"},'
+            ' {"start": 10, "end": 50, "score": 80, "hook": "h", "reason": "r"}]')
+    out = parse_llm_response(text, CHUNK, 600, stats)
+    assert len(out) == 1
+    assert stats == {"parsed": 4, "kept": 1, "trimmed": 0,
+                     "dropped_length": 1, "dropped_junk": 2}
+
+
+def test_normal_length_candidate_is_unchanged():
+    text = ('[{"start": 10, "end": 100, "score": 85, "hook": "h", "reason": "r",'
+            ' "trigger_t": 12, "reaction_peak_t": 50, "payoff_end_t": 90}]')
+    stats = {}
+    (c,) = parse_llm_response(text, CHUNK, 600, stats)
+    assert (c["start"], c["end"], c["trigger_t"], c["payoff_end_t"]) == \
+        (10, 100, 12, 90)
+    assert stats["trimmed"] == 0
+
+
+def test_prompt_asks_for_several_moments_and_caps_length():
+    p = build_system_prompt()
+    assert "SEVERAL" in p and "one per 3-5 minutes" in p
+    assert "0-4 candidates" not in p
+    assert "at most 90 seconds" in p
+    for ht in HOOK_TYPES:                    # list still generated from the type
+        assert ht in p
+    assert moment_target(18 * 60) == (4, 6)
+    assert moment_target(5 * 60) == (1, 2)
+    assert moment_target(0) == (1, 1)
+
+
+def test_user_message_states_a_target_scaled_to_the_chunk():
+    c = FakeClient([GOOD])
+    AnthropicHighlighter(client=c).analyze_chunk(
+        Chunk(0, 0, 1080, make_transcript(duration=100.0).segments), 1800.0)
+    msg = c.calls[0]["messages"][0]["content"]
+    assert "about 4-6 moments" in msg and "at most 90 seconds" in msg
+
+
+def test_chunk_counts_are_logged_and_stored(capsys):
+    t = make_transcript(duration=100.0)
+    reply = json.dumps([
+        {"start": 0, "end": 30, "score": 90, "hook": "a", "reason": "r"},
+        {"start": 0, "end": 300, "score": 80, "hook": "b", "reason": "r"},
+        {"start": 40, "end": 70, "score": 30, "hook": "c", "reason": "r"},
+        {"start": 50, "end": 53, "score": 99, "hook": "d", "reason": "r"},
+        "junk",
+        {"start": 60, "end": 90, "score": 85, "hook": "e", "reason": "r",
+         "stranger_check": {"pass": False, "reason": "needs backstory"}},
+    ])
+    h = AnthropicHighlighter(client=FakeClient([reply]))
+    h.find_highlights(t, min_score=55)
+    (c,) = h.usage_record()["chunks"]
+    assert c == {"index": 0, "kept": 2, "trimmed": 1, "dropped_length": 1,
+                 "dropped_junk": 1, "dropped_low_score": 1,
+                 "rejected_stranger": 1}
+    err = capsys.readouterr().err
+    assert "chunk 0" in err and "kept 2" in err and "trimmed 1" in err
+    assert "1 too short" in err and "1 junk" in err and "1 below min score" in err
+
+
+def test_chunk_counts_reach_highlight_usage_json(transcribed_job):
+    from clipforge.highlight.backends import MockHighlighter
+    highlight_job(transcribed_job, MockHighlighter())
+    rec = json.loads((transcribed_job / USAGE_NAME).read_text(encoding="utf-8"))
+    assert rec["chunks"] and rec["chunks"][0]["index"] == 0
+
+
+# --------------------------------------------- F54 review fixes
+
+def _one(start, end, t0=None, tp=None, te=None, src=1000):
+    times = "" if t0 is None else (
+        f', "trigger_t": {t0}, "reaction_peak_t": {tp}, "payoff_end_t": {te}')
+    text = (f'[{{"start": {start}, "end": {end}, "score": 80, "hook": "h", '
+            f'"reason": "r"{times}}}]')
+    stats = {}
+    return parse_llm_response(text, CHUNK, src, stats), stats
+
+
+def test_trigger_near_the_end_anchors_the_window_at_the_end():
+    for end, times in [(100, (95, 96, 100)), (300, (290, 295, 300))]:
+        (c,), st = _one(0, end, *times)
+        assert c["end"] == end and c["end"] - c["start"] == MAX_CLIP_SEC
+        assert c["start"] < times[0] < c["end"]       # trigger and peak kept
+        assert c["trigger_t"] == times[0] and st["trimmed"] == 1
+
+
+def test_trim_result_under_the_minimum_is_dropped_and_counted():
+    # a window the trim cannot widen: end - start < MIN after trimming
+    from clipforge.highlight import backends
+    orig = backends._trim_window
+    backends._trim_window = lambda s, e, i: (s, s + 5)
+    try:
+        out, st = _one(0, 300)
+    finally:
+        backends._trim_window = orig
+    assert out == [] and st["dropped_length"] == 1 and st["trimmed"] == 0
+
+
+def test_valid_peak_anchors_the_window_when_another_time_is_off():
+    # payoff_end_t lies past the candidate's end: only the peak is usable
+    (c,), _ = _one(0, 300, 190, 200, 350)
+    assert c["start"] < 200 < c["end"] and c["end"] - c["start"] == MAX_CLIP_SEC
+    assert (c["start"], c["end"]) == (155, 245)
+    assert "trigger_t" not in c                       # all-or-none, untrusted
+    (c,), _ = _one(0, 300, 10, 290, 295)              # peak near the end
+    assert c["end"] == 295 and c["start"] < 290 < c["end"]
+
+
+def test_times_cut_off_by_the_trim_are_dropped_not_clamped():
+    (c,), _ = _one(0, 300, 5, 150, 290)
+    assert c["reaction_peak_t"] == 150
+    assert "trigger_t" not in c and "payoff_end_t" not in c
+
+
+def test_ron_fixtures_are_the_exact_raw_replies():
+    """Fixtures are byte-copies of the raw replies of bench run
+    bench-20261014-210447-ron (highlight_raw_chunk_000/001.txt), not hand-built."""
+    import hashlib
+    for n, want in ((0, "8d6dd3e42eeb7dacf4d8c1a37e3f097b5fc01a394b71004570518e40d53fddc0"),
+                    (1, "9c1a61316797a85ede4d67fab4c5a73eade09005b4e0c2e3226be3ae32a417aa")):
+        raw = (RON / f"ron_reply_chunk_{n:03d}.json").read_bytes()
+        assert hashlib.sha256(raw).hexdigest() == want
+
+
+def test_normal_length_keeps_times_with_more_than_3_decimals():
+    text = ('[{"start": 10.0004, "end": 60.0004, "score": 80, "hook": "h", '
+            '"reason": "r", "trigger_t": 10.0004, "reaction_peak_t": 30.00049, '
+            '"payoff_end_t": 60.0004}]')
+    (c,) = parse_llm_response(text, CHUNK, 1000)
+    assert c["trigger_t"] == 10.0 and c["payoff_end_t"] == 60.0
+
+
+def test_trimmed_clip_is_never_longer_than_the_cap():
+    for s in (10.0005, 10.0015, 10.0025, 10.0035):
+        (c,), _ = _one(s, s + 300)
+        assert c["end"] - c["start"] <= MAX_CLIP_SEC

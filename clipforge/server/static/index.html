@@ -46,6 +46,7 @@
   .job .name { font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .job .stage { font-size:11px; color:var(--dim); margin-top:4px; }
   .job .stage.failed { color:var(--bad); }
+  .job .stage.warn { color:var(--warn); }
   #detail { flex:1; overflow-y:auto; padding:20px; }
   .stagebar { display:flex; gap:6px; margin-bottom:18px; flex-wrap:wrap; }
   .stagebar span {
@@ -454,8 +455,9 @@ function renderJobs(jobs) {
     e.name.title = j.filename;
     const failed = j.failed && !j.running;      // a retry in progress is not "failed"
     e.stage.classList.toggle("failed", failed);
+    e.stage.classList.toggle("warn", !failed && !j.running && !!j.warning);
     e.stage.textContent =
-      (failed ? "FAILED" : j.stage) +
+      (failed ? "FAILED" : (j.warning && !j.running) ? "NO CLIPS" : j.stage) +
       (j.progress && j.stage !== "rendered" ? " · " + j.progress : "") +
       " · " + Math.round(j.duration) + "s";
     const want = prev ? prev.nextSibling : list.firstChild;
@@ -562,13 +564,19 @@ async function renderDetail(jobId) {
     D.status.className = "err warn";
     D.statusText.textContent = j.progress || "working…";
     D.retry.hidden = true;
+  } else if (j.warning && !j.running && j.clips.length === 0) {
+    // finished with nothing to review: not a normal success (fixed server sentence)
+    D.status.hidden = false;
+    D.status.className = "err warn";
+    D.statusText.textContent = j.warning;
+    D.retry.hidden = true;
   } else {
     D.status.hidden = true;
   }
 
   const hasClips = j.clips.length > 0;
   D.exportbar.hidden = D.toolbar.hidden = D.grid.hidden = !hasClips;
-  D.empty.hidden = hasClips || j.stage !== "rendered";
+  D.empty.hidden = hasClips || j.stage !== "rendered" || !!j.warning;
   if (hasClips) {
     const m = j.metrics;
     D.exportText.textContent =

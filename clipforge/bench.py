@@ -34,6 +34,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from clipforge.common.manifest import Manifest, is_safe_job_id
 from clipforge.highlight.backends import USAGE_NAME
+from clipforge.highlight.schema import ZERO_CLIPS_WARNING
 from clipforge.review.store import replace_with_retry
 
 BENCH_ENV = "CLIPFORGE_BENCH_DIR"
@@ -383,6 +384,9 @@ def _run_entry(e: BenchEntry, bench_dir: Path, workspace: Path, run_id: str,
         row["error"] = _short(ex)
     row["process_min"] = round((time.monotonic() - started) / 60, 2)
     _collect(workspace / job_id, row)
+    if row["status"] == "ok" and not row["clips"]:
+        row["status"] = "warn"          # finished, but nothing to review
+        row["error"] = ZERO_CLIPS_WARNING
     return row
 
 
