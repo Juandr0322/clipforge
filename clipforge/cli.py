@@ -6,6 +6,7 @@ Usage:
     python -m clipforge.cli status <job-id>    [--workspace DIR]
     python -m clipforge.cli bench init|run|report [--bench-dir DIR] [--only NAME ...]
     python -m clipforge.cli audio check|add ...
+    python -m clipforge.cli layout init|check|preview --creator NAME ...
 """
 import argparse
 import datetime
@@ -242,6 +243,28 @@ def main() -> int:
                          "facebook (default: all)")
     aa.add_argument("--library", default=None)
 
+    pl = sub.add_parser("layout", help="Per-creator stacked layout "
+                        "(facecam over gameplay)")
+    lsub = pl.add_subparsers(dest="layout_cmd", required=True)
+    li = lsub.add_parser("init", help="Write a starting layout.json for a "
+                         "creator, sized to one of their videos")
+    li.add_argument("--creator", required=True)
+    li.add_argument("--video", required=True)
+    li.add_argument("--workspace", default=str(DEFAULT_WS))
+    lc = lsub.add_parser("check", help="Validate a creator's layout.json")
+    lc.add_argument("--creator", required=True)
+    lc.add_argument("--workspace", default=str(DEFAULT_WS))
+    lp = lsub.add_parser("preview", help="Write the stacked frame and the "
+                         "boxes frame as PNGs, to measure the boxes")
+    lp.add_argument("video")
+    lp.add_argument("--creator", required=True)
+    lp.add_argument("--at", type=float, default=60.0,
+                    help="seconds into the video (default 60)")
+    lp.add_argument("--out", default=None,
+                    help="PNG path (default: layout_preview.png next to "
+                         "the layout file)")
+    lp.add_argument("--workspace", default=str(DEFAULT_WS))
+
     args = p.parse_args()
 
     if args.cmd == "ingest":
@@ -434,6 +457,8 @@ def main() -> int:
 
     if args.cmd == "audio":
         return audio_command(args)
+    if args.cmd == "layout":
+        return layout_command(args)
     if args.cmd == "bench":
         return run_bench_command(args)
     return 2
@@ -470,6 +495,56 @@ def audio_command(args) -> int:
     for prob in lib.problems:
         print(f"  problem: {prob}")
     return 1 if lib.problems else 0
+
+
+def layout_command(args) -> int:
+    from clipforge.layout import (
+        LayoutError, layout_path, load_layout_file, template,
+    )
+    try:
+        path = layout_path(Path(args.workspace), args.creator)
+    except LayoutError as e:
+        print(f"LAYOUT FAILED: {e}", file=sys.stderr)
+        return 2
+    if args.layout_cmd == "init":
+        if path.exists():
+            print(f"{path} already exists; left it as it is.")
+            return 0
+        from clipforge.layout.preview import video_size
+        try:
+            w, h = video_size(Path(args.video))
+        except Exception:  # noqa: BLE001 - any probe failure
+            print("LAYOUT FAILED: could not read the video's size",
+                  file=sys.stderr)
+            return 1
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(template(w, h), indent=2) + "\n",
+                        encoding="utf-8", newline="\n")
+        print(f"Wrote {path}. Edit the facecam and game boxes (pixels of a "
+              f"{w}x{h} frame), then run `clipforge layout preview`.")
+        return 0
+    if not path.is_file():
+        print(f"LAYOUT FAILED: no layout file at {path}; run `clipforge "
+              "layout init` first", file=sys.stderr)
+        return 1
+    try:
+        lay = load_layout_file(path)
+    except LayoutError as e:
+        print(f"LAYOUT FAILED: {e}", file=sys.stderr)
+        return 1
+    if args.layout_cmd == "check":
+        print(f"{path}: ok ({lay.name}, facecam {lay.cam_share:.0%} of the "
+              f"height, gameplay {lay.gameplay_share:.0%})")
+        return 0
+    from clipforge.layout.preview import PreviewError, write_preview
+    out = Path(args.out) if args.out else path.with_name("layout_preview.png")
+    try:
+        stacked, boxes = write_preview(Path(args.video), lay, out, args.at)
+    except PreviewError as e:
+        print(f"LAYOUT FAILED: {e}", file=sys.stderr)
+        return 1
+    print(f"stacked frame: {stacked}\nboxes on the source: {boxes}")
+    return 0
 
 
 def run_bench_command(args) -> int:

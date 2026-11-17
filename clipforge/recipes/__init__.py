@@ -20,6 +20,7 @@ from clipforge.review.store import replace_with_retry
 RECIPES_DIR = Path(__file__).parent / "files"
 RECORD_NAME = "recipe.json"
 DEFAULT_RECIPE = "talk"
+LAYOUTS = ("face", "stacked")
 _FLAG_WORDS = TRUE_WORDS | FALSE_WORDS
 # (key, env var, lower bound, upper bound) for the dB settings
 _DB = (("sfx_level_db", "CLIPFORGE_SFX_LEVEL_DB", -40.0, SFX_MAX_DB),
@@ -41,6 +42,7 @@ class Recipe:
     max_candidates: int
     captions: bool
     audio: dict | None = None   # validated overrides of the F48 audio settings
+    layout: str = "face"        # F56: "face" (tracked crop) or "stacked"
 
     def audio_config(self) -> AudioLayerConfig | None:
         """Audio settings: env var if set, else the recipe value, else the default.
@@ -171,10 +173,14 @@ def load_recipe_file(path: Path) -> Recipe:
     if max_cand < 1:
         _fail(path, "max_candidates", "must be 1 or more")
     audio = _audio(path, data["audio"]) if "audio" in data else None
+    layout = data.get("layout", "face")
+    if layout not in LAYOUTS:
+        _fail(path, "layout", f"must be one of: {', '.join(LAYOUTS)}")
     return Recipe(name=name, version=version,
                   description=_text(path, data, "description"),
                   min_score=min_score, max_candidates=max_cand,
-                  captions=_bool(path, data, "captions"), audio=audio)
+                  captions=_bool(path, data, "captions"), audio=audio,
+                  layout=layout)
 
 
 def recipe_names(directory: Path | None = None) -> list[str]:

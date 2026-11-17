@@ -97,9 +97,14 @@ def write_sendcmd(path: Path, crop: CropPath, geom: CropGeometry,
 def build_filtergraph(geom: CropGeometry, crop: CropPath, src_w: int,
                       ass_path: Path | None, sendcmd_path: Path | None,
                       zoom=None, overlay_ass: Path | None = None,
-                      end_card_sec: float = 0.0) -> str:
+                      end_card_sec: float = 0.0,
+                      stack_vf: str | None = None) -> str:
+    """`stack_vf` (F56) replaces the crop with a ready-made 1080x1920 layout
+    graph (clipforge.layout.Layout.filter); captions and extras still follow."""
     parts = []
-    if geom.mode == "crop":
+    if stack_vf is not None:
+        parts.append(stack_vf)
+    elif geom.mode == "crop":
         if crop.mode in ("static", "center") or sendcmd_path is None:
             cx = crop.keyframes[0].cx if crop.keyframes else 0.5
             x0 = crop_x_px(cx, src_w, geom.crop_w)
@@ -130,7 +135,8 @@ def render_clip(normalized_video: Path, out_path: Path, start: float,
                 workdir: Path | None = None, zoom=None,
                 overlay_ass: Path | None = None,
                 end_card_sec: float = 0.0,
-                audio_layer: Path | None = None) -> None:
+                audio_layer: Path | None = None,
+                stack_vf: str | None = None) -> None:
     """`audio_layer` (F48) is a raw float32 stereo 48 kHz track, clip-
     relative, covering the clip plus any end card. It is mixed on top of the
     original audio at the levels it was built with, then the mix is
@@ -139,13 +145,13 @@ def render_clip(normalized_video: Path, out_path: Path, start: float,
     geom = CropGeometry.for_source(src_w, src_h)
 
     sendcmd_path = None
-    if geom.mode == "crop" and crop.mode == "tracked":
+    if stack_vf is None and geom.mode == "crop" and crop.mode == "tracked":
         sendcmd_path = (workdir or out_path.parent) / (out_path.stem + ".cmds")
         write_sendcmd(sendcmd_path, crop, geom, src_w, fps, duration)
 
     vf = build_filtergraph(geom, crop, src_w, ass_path, sendcmd_path,
                            zoom=zoom, overlay_ass=overlay_ass,
-                           end_card_sec=end_card_sec)
+                           end_card_sec=end_card_sec, stack_vf=stack_vf)
     af = f"loudnorm=I={TARGET_LUFS}:TP=-1.5:LRA=11"
     total = duration
     if end_card_sec > 0:
