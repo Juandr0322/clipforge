@@ -1,10 +1,11 @@
 {
   "name": "gaming",
-  "version": 1,
-  "description": "Gaming streams: talk defaults plus a quiet sound-effect and music layer over the original game audio and voice.",
+  "version": 2,
+  "description": "Gaming streams: talk defaults plus a quiet sound-effect and music layer over the original game audio and voice. Stacks the facecam over the gameplay when the creator has a layout file.",
   "min_score": 55,
   "max_candidates": 12,
   "captions": true,
+  "layout": "stacked",
   "audio": {
     "sfx": true,
     "music": true,

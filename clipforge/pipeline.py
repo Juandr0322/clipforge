@@ -38,6 +38,8 @@ class PipelineConfig:
     # None = take the value from the recipe (clipforge/recipes/files/<name>.json)
     recipe: Optional[str] = field(
         default_factory=lambda: os.environ.get("CLIPFORGE_RECIPE") or None)
+    # F56: whose layout file to use (creators/<slug>/layout.json)
+    creator: Optional[str] = field(default_factory=lambda: _creator_env())
     min_score: Optional[int] = None
     max_candidates: Optional[int] = None
     captions: Optional[bool] = None
@@ -59,6 +61,11 @@ class PipelineConfig:
 
 
 ProgressFn = Callable[[str], None]
+
+
+def _creator_env() -> Optional[str]:
+    from clipforge.layout import creator_from_env
+    return creator_from_env()
 
 
 RECIPE_FAILED = ("The recipe could not be loaded. Check CLIPFORGE_RECIPE and the "
@@ -158,8 +165,16 @@ def run_pipeline(job_dir: Path, cfg: PipelineConfig,
     if not m.is_at_least(Stage.RENDERED):
         progress("rendering clips…")
         from clipforge.render.run import render_job
+        layout = None
+        if recipe is not None and recipe.layout != "face":
+            from clipforge.layout import choose_layout
+            layout = choose_layout(recipe.layout, job_dir.parent, cfg.creator,
+                                   m.ingest.normalized_width,
+                                   m.ingest.normalized_height)
+            progress(f"layout: {layout.reason}")
         m = render_job(job_dir, captions=captions,
-                       audio=recipe.audio_config() if recipe else None)
+                       audio=recipe.audio_config() if recipe else None,
+                       layout=layout)
 
     from clipforge.quality.report import quality_job
     try:

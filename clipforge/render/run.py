@@ -7,6 +7,7 @@ and write a QA contact sheet. Advances manifest to RENDERED.
 """
 from __future__ import annotations
 
+import dataclasses
 import math
 import sys
 from datetime import datetime, timezone
@@ -182,7 +183,11 @@ def render_job(job_dir: str | Path, force: bool = False,
                style: CaptionStyle | None = None,
                contact_sheets: bool = True,
                overlays: OverlayConfig | None = None,
-               audio: AudioLayerConfig | None = None) -> Manifest:
+               audio: AudioLayerConfig | None = None,
+               layout=None) -> Manifest:
+    """`layout` (F56) is a clipforge.layout.LayoutChoice: with a layout the
+    clips are stacked (facecam over gameplay) and captions sit on the seam;
+    without one (or None) they use the face-tracked crop as before."""
     job_dir = Path(job_dir)
     m = Manifest.load(job_dir)
 
@@ -203,6 +208,14 @@ def render_job(job_dir: str | Path, force: bool = False,
         cfg = overlays or OverlayConfig.from_env()
         acfg = audio or AudioLayerConfig.from_env()
         v2 = _v2_fields(job_dir, m, rs)
+        lay = getattr(layout, "layout", None)
+        stack_vf = None
+        if lay is not None:
+            stack_vf = lay.filter(m.ingest.normalized_width,
+                                  m.ingest.normalized_height)
+            base = style or CaptionStyle()
+            style = dataclasses.replace(
+                base, margin_v=lay.caption_margin_v(base.font_size))
         lib = None
         if acfg.sfx or acfg.music:
             from clipforge.audio.library import load_library
@@ -221,6 +234,8 @@ def render_job(job_dir: str | Path, force: bool = False,
             kw = dict(src_w=m.ingest.normalized_width,
                       src_h=m.ingest.normalized_height,
                       fps=m.ingest.normalized_fps, ass_path=ass_path)
+            if stack_vf is not None:
+                kw["stack_vf"] = stack_vf
             try:
                 zoom, ov_ass, card, entries = _plan_extras(
                     clip, v2.get(clip.id, {}), cfg, renders)
@@ -230,6 +245,13 @@ def render_job(job_dir: str | Path, force: bool = False,
                             "reason": "could not be planned"}
                            for n in ("context_overlay", "punch_in",
                                      "end_card")]
+            if stack_vf is not None and zoom is not None:
+                # the punch-in zooms the frame centre, which is the seam of
+                # the stack: off until it can zoom one band
+                zoom = None
+                entries = [{"name": "punch_in", "applied": False,
+                            "reason": "not used with the stacked layout yet"}
+                           if e["name"] == "punch_in" else e for e in entries]
             expected = clip.end - clip.start + card
             plain = zoom is None and ov_ass is None and not card
 
@@ -255,10 +277,21 @@ def render_job(job_dir: str | Path, force: bool = False,
             attempts.append(("extras" if not plain else "plain", None))
             if not plain:
                 attempts.append(("plain", None))
+            if stack_vf is not None:
+                # last resort: the face-tracked crop, so a bad layout never
+                # fails the stage
+                attempts.append(("face", None))
+            clip_layout = layout.report() if layout is not None else None
             try:
                 for i, (kind, lay) in enumerate(attempts):
                     try:
-                        if kind == "plain":
+                        if kind == "face":
+                            face_kw = {k: v for k, v in kw.items()
+                                       if k != "stack_vf"}
+                            render_clip(norm, out, clip.start, clip.end,
+                                        crop, **face_kw)
+                            verify_render(out, clip.end - clip.start)
+                        elif kind == "plain":
                             render_clip(norm, out, clip.start, clip.end,
                                         crop, audio_layer=lay, **kw)
                             verify_render(out, clip.end - clip.start)
@@ -281,7 +314,15 @@ def render_job(job_dir: str | Path, force: bool = False,
                                 if kind != "plain" or plain else
                                 "the render with extras failed; plain cut "
                                 "used without added audio"}
-                    if kind == "plain" and not plain:
+                    if kind == "face":
+                        clip_layout = {**clip_layout, "applied": False,
+                                       "name": "face_crop",
+                                       "reason": "the stacked render failed; "
+                                                 "face-tracked crop used"}
+                        arep = {**(arep or {}), "applied": False, "reason":
+                                "the stacked render failed; plain cut used "
+                                "without added audio"}
+                    if kind in ("plain", "face") and not plain:
                         # extras must never fail the stage: plain cut used
                         entries = [{"name": e["name"], "applied": False,
                                     "reason": "extras failed, rendered "
@@ -300,6 +341,8 @@ def render_job(job_dir: str | Path, force: bool = False,
                            else "no words in this clip")})
             _record_value_adds(job_dir, clip.id, entries)
             _record(job_dir, clip.id, "audio_layer", arep)
+            if clip_layout is not None:
+                _record(job_dir, clip.id, "layout", clip_layout)
             if contact_sheets:
                 make_contact_sheet(out, renders / f"clip_{clip.id:03d}_qa.png")
 

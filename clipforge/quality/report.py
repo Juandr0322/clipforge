@@ -18,7 +18,7 @@ from clipforge.refine.refine import RefinedSet
 from clipforge.review.store import job_lock, replace_with_retry
 
 SECTIONS = ("hook_score", "value_adds", "pacing_flags", "variants", "loop",
-            "exports", "audio_layer")
+            "exports", "audio_layer", "layout")
 
 
 class ClipReport(BaseModel):
@@ -32,6 +32,7 @@ class ClipReport(BaseModel):
     loop: Optional[dict[str, Any]] = None
     exports: Optional[list[Any]] = None
     audio_layer: Optional[dict[str, Any]] = None
+    layout: Optional[dict[str, Any]] = None
 
 
 def report_path(job_dir: Path, clip_id: int) -> Path:
