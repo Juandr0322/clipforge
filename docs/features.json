@@ -1216,6 +1216,98 @@
       "passes": true,
       "notes": "FIXED: the product was right, the fixture was wrong. F11 added trigger_t/reaction_peak_t/payoff_end_t to RefinedClip with a validator (start <= trigger <= peak <= payoff <= end). The multi fixture copied c0 and moved start/end with model_copy (no validation), so refined.json held out-of-range times, RefinedSet.load raised, /api/jobs/{id} returned 500 and .clip video never appeared. Fixture now sets the three times to None on the two synthesized clips. 27/27 browser tests pass. Follow-ups: /api/jobs/{id} returns a generic 500 on a bad refined.json; job_metrics/workspace_metrics let one bad job fail /api/metrics for the whole workspace. Found 2026-10-15 while checking F54: test_keyboard_shortcuts_act_on_the_selected_clip passes at 0dd9aab (F10 merge) and e06dd69 (F25 merge) and fails at 8e1e4fe (F11 merge) and all later commits, including main. The F11 PR did not touch the server so browser tests were not run before merge. The multi fixture (tests/test_ui_browser.py ~line 377) assumes c0.start < 5.0 < c1.start from the mock pipeline, which hook-first trimming may have changed.",
       "priority": 12.4
+    },
+    {
+      "id": "F56",
+      "title": "Stacked layout: facecam over gameplay from a hand-measured creator layout file (smallest slice of F52)",
+      "priority": 46,
+      "area": [
+        "clipforge/layout/**",
+        "clipforge/render/**",
+        "clipforge/recipes/**",
+        "clipforge/pipeline.py",
+        "clipforge/quality/report.py",
+        "clipforge/cli.py",
+        "tests/test_layout.py"
+      ],
+      "depends_on": [
+        "F31"
+      ],
+      "acceptance": [
+        "creators/<slug>/layout.json holds frame size, a facecam box and a game box in source pixels; the loader rejects missing fields, bools, fractions, NaN/Infinity, boxes past the frame and unknown keys, naming file and field (test)",
+        "A job whose recipe has layout 'stacked' and whose creator (CLIPFORGE_CREATOR) has a usable layout renders the facecam band (default 35%) over the gameplay band at 1080x1920 with no stretching (pixel test)",
+        "Captions sit on the seam between the bands; the punch-in zoom is off for stacked clips and the report says why (test)",
+        "No creator, no layout file, an invalid file or a different aspect ratio: the face-tracked crop is used and the reason is in the clip report's layout section; a failed stacked render falls back to the face crop and never fails the stage (tests)",
+        "Renders without a layout produce the same filtergraph as main (test against git show origin/main)",
+        "The gaming recipe selects 'stacked'; every other recipe keeps the face crop; `clipforge layout init|check|preview` work, preview writes the stacked frame and a boxes frame as PNGs (tests)"
+      ],
+      "passes": true,
+      "notes": "Built 2026-11-17 for the GTA 6 launch-week test (master plan, Group E). Gaming recipe bumped to version 2. Layout boxes are scaled from the measured frame to the normalized video; aspect-ratio mismatch beyond 2% falls back. Auto-detection, more than one cam and switching to full cam around the reaction peak stay in F52."
+    },
+    {
+      "id": "F57",
+      "title": "Campaign allowlist: hand-edited campaigns.json, `clipforge campaigns list|check`, job records its campaign, disclosure in the context overlay",
+      "priority": 47,
+      "area": [
+        "clipforge/campaigns/**",
+        "clipforge/cli.py",
+        "clipforge/render/overlays.py",
+        "tests/test_campaigns.py"
+      ],
+      "depends_on": [
+        "F56"
+      ],
+      "acceptance": [
+        "campaigns.json in the workspace: id, platform, channels, brief_url, rate_per_1k, cap_per_clip, min_payout, budget_left, post_platforms, disclosure_text, music_rule, min_sec, max_sec, expires, recipe; validated like other hand-edited files (file + field in every error, utf-8-sig, no NaN/bools) (tests)",
+        "`clipforge campaigns list|check` print the campaigns and every problem (tests)",
+        "A job records its campaign id; the campaign's disclosure text is shown in the context overlay (test)"
+      ],
+      "passes": false,
+      "notes": "Master plan launch week (E2). Planner refines against the code before building."
+    },
+    {
+      "id": "F58",
+      "title": "Live record first, VOD fetch as fallback, allowlisted campaign channels only",
+      "priority": 48,
+      "area": [
+        "clipforge/capture/**",
+        "clipforge/ingest/**",
+        "clipforge/cli.py",
+        "tests/test_capture.py"
+      ],
+      "depends_on": [
+        "F57"
+      ],
+      "acceptance": [
+        "`clipforge record <channel> --campaign <id> --segment 5m` records the live stream as a stream copy; each finished segment becomes a normal job through the existing ingest while recording continues; segments overlap by 20 s; a dropped recording restarts and the gap is logged (tests with a mock Fetcher)",
+        "`clipforge fetch <url> --campaign <id> [--from --to | --last 30m]` pulls a VOD range (mock in tests)",
+        "Refused with a fixed sentence recorded before raising: channel not in the campaign, expired campaign, budget_left 0 (tests)",
+        "streamlink and yt-dlp run only as subprocesses behind the Fetcher engine and are never called in tests; no cookies, tokens or ad-skipping options are passed (test on the built command line)"
+      ],
+      "passes": false,
+      "notes": "Master plan launch week (E3). ToS: public stream capture is a tolerated grey area; keep it to allowlisted campaign channels."
+    },
+    {
+      "id": "F59",
+      "title": "Gate v0: hard fails plus strike-based soft checks, shadow mode by default, gate_log.csv",
+      "priority": 49,
+      "area": [
+        "clipforge/quality/**",
+        "clipforge/pipeline.py",
+        "clipforge/cli.py",
+        "tests/test_gate.py"
+      ],
+      "depends_on": [
+        "F57"
+      ],
+      "acceptance": [
+        "Hard fails remove a clip: outside campaign or platform duration limits, unreadable media, breaks a campaign rule, duplicate of a kept clip (tests)",
+        "Soft checks, cheapest first, each one strike: speech in the first 3 s, words per second, loudness peak against the clip median, stranger_check, hook_score after render; a clip is removed only when strikes reach max_strikes (default 2, per recipe); evaluation stops there; a recipe can mark a check required or ignored; missing input is 'skipped', never a strike or a crash (tests for 0, 1 and max strikes)",
+        "CLIPFORGE_GATE=off|shadow|enforce, default shadow; shadow changes no output except gate_log.csv and a gate report section (same-as-main test); enforce removes the render but keeps the report and candidate",
+        "Every check result is one gate_log.csv row written under the job lock; `clipforge gate report` prints counts per check and per strike total (tests)"
+      ],
+      "passes": false,
+      "notes": "Master plan launch week (E4). Diego 2026-11-16: delete only when several checks fail, not on the first failure. Keep shadow mode through launch weekend, tune on Nov 23."
     }
   ]
 }

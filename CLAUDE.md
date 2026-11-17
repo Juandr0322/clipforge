@@ -1,5 +1,5 @@
 # Project: ClipForge
-AI pipeline that turns long streams/podcasts into captioned vertical clips, plus a local review website (FastAPI + one static page) where Diego approves clips. Used to sell clipping retainers to small creators; also a resume project, so code quality and git history matter.
+AI pipeline that turns long streams/podcasts into captioned vertical clips, plus a local review website (FastAPI + one static page) where Diego approves clips. Used for clipping retainers and for paid clipping campaigns on live streamers (any game or category; docs/SPEC.md Group E); also a resume project, so code quality and git history matter.
 
 ## Commands
 <!-- Agents copy these exactly. -->
@@ -22,7 +22,7 @@ AI pipeline that turns long streams/podcasts into captioned vertical clips, plus
 - A feature is done when its acceptance criteria pass — not when the code "looks right."
 - Never edit a test just to make it pass. If a test is wrong, say so and explain why.
 - Never read or print secrets (`.env`, `client_secret*.json`, keys, tokens). Never commit video files. Never push, deploy, or publish.
-- Only use footage we have rights to; nothing posts to social platforms automatically.
+- Only use footage we have rights to: a client's own footage, or a channel listed in a joined, unexpired campaign (Group E). Recording or fetching any other channel is refused. Nothing posts to social platforms automatically.
 - Keep command output short: pipe long output through `tail -40` or `grep`.
 - Search for an existing helper before writing a new one.
 - Commit small, with descriptive messages.

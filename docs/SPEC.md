@@ -88,6 +88,18 @@ The full roadmap, with reasons and sources, is the "ClipForge v2 Roadmap" doc (h
 
 Decisions: gaming is tuned first (2026-10-14, replacing "talk first"); edit quality comes before the workspace UI (2026-10-14); added music and sound effects are a quiet layer over the original audio (2026-10-14); the UI stays vanilla JS; Signals is an 8th stage; multi-file editing comes after the gaming recipe; the repo gets an MIT license. Code copied (not just ideas) from MIT/BSD projects keeps its notice in `THIRD_PARTY_NOTICES.md`; GPL/AGPL code is never copied in.
 
+### Group E: campaign clipping and live capture (Diego, 2026-11-16; master plan 2026-11-17)
+The current plan is the "ClipForge Master Plan" doc (https://claude.ai/artifact/TFiKANDXdAmJgTN97AwDkQ), which merges the Group D roadmap with the Nov 16 tech-lead plan. ClipForge clips streamers in general, any game or category. Besides retainers, Diego clips live streams for paid clipping campaigns (Whop Content Rewards and similar), where the campaign brief is the permission to use the streamer's footage. Posting stays manual and everything stays local. Nothing in the code may be specific to one game.
+
+- **Launch week (F56–F59), GTA 6 launch on 2026-11-19 is the first live test.**
+  - F56 stacked layout: the smallest slice of F52. A hand-measured `creators/<slug>/layout.json` (facecam box, game box, frame size) stacks the facecam (about 35%) over the gameplay at 1080x1920, with captions on the seam. The gaming recipe selects it; with no usable layout file the face-tracked crop is used and the reason goes into the clip report. `clipforge layout init|check|preview`. No auto-detection.
+  - F57 campaign allowlist: a hand-edited `campaigns.json` in the workspace (rate, cap, platforms, disclosure text, music rule, length limits, channels, expiry). A job records its campaign; the disclosure is added to the context overlay.
+  - F58 live record first, VOD fetch as fallback: `clipforge record <channel> --campaign <id>` writes stream-copy segments that become normal jobs; `clipforge fetch` covers late starts and gaps. Allowlisted channels only.
+  - F59 gate v0, strike-based, shadow mode by default: hard fails remove a clip; each soft fail is one strike and a clip is removed only when strikes reach `max_strikes` (default 2, per recipe). Every check result goes to `gate_log.csv`.
+- **After launch week**, in this order: speed and cost (remux or NVENC, F34), live workers (watcher on the official Twitch and Kick APIs, rolling buffer, loudness trigger, worker pool), Signals (F32) with chat rate and gate v1, then the Group D Phase 1 edit-quality features (F49, F13, F50, F51, the rest of F52, F42), then a campaign monitor, an edit-decision agent and the review queue and learning loop. Each step ends at the same benchmark gate as Group D. The workspace UI (F26–F30, F53) and multi-file edits wait until a client needs them.
+
+Capture rules: record or fetch only channels listed in a joined, unexpired campaign with budget left, refusing everything else with a fixed sentence. One connection per channel, no login cookies or tokens, no ad-skipping or paywall bypass, no unofficial Kick endpoints. Ask each campaign for editor access or source files first. Official APIs (Twitch Get Streams/EventSub, Kick public API) are used only for who is live and for chat.
+
 ## 5. Data model sketch
 
 These are additions. Every existing file keeps its shape or gains only optional fields.
@@ -136,8 +148,8 @@ Keep the current look: dark background, monospace, teal accent, the green/red ap
 
 ## 8. Out of scope
 - Posting to any platform automatically, or scheduling posts.
-- YouTube, Instagram, TikTok, X or Facebook API connections. Analytics arrive only as CSV exports, and auth or OAuth flows are not planned.
-- Multi-user use, auth, cloud hosting, job queues, or exposing the server beyond localhost.
+- YouTube, Instagram, TikTok, X or Facebook API connections. Analytics arrive only as CSV exports. The only platform APIs in scope are Twitch's and Kick's official read APIs for who is live and for chat (Group E).
+- Multi-user use, auth, cloud hosting, or exposing the server beyond localhost. A local job table and worker processes for live capture (Group E) are in scope; Redis, Celery and remote queues are not.
 - Trending sounds baked into exported files (creators add those in each platform's app at posting time), AI voiceover, stock footage, or face/voice swaps. Royalty-free music beds and sound effects from Diego's license-tracked audio library are in scope (F48), always as a quiet layer under the original audio.
-- Processing footage Diego doesn't have rights to.
+- Processing footage Diego doesn't have rights to. Footage from a channel named in a campaign Diego joined counts as permitted, within that brief's rules (Group E); any other channel is refused.
 - Rewriting the stage architecture or the manifest state machine. Adding a stage built the same way (JSON in and out, idempotent, verifies its own outputs) is allowed: F32 adds Signals as the 8th stage.
